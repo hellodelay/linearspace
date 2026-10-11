@@ -4,10 +4,10 @@ import { offsetToAxial } from './hex.js';
 // Placeholder encounter. Offsets are (col, row); row 0 is the enemy edge.
 export const DEFAULT_SCENARIO = Object.freeze({
   id: 'proto-skirmish',
-  grid: { width: 8, height: 10 },
+  grid: { width: 8, height: 8 },
   // ASSUMPTION (GDD 8.3, TBD): prototype deployment cap.
   deployCap: 5,
-  deployRows: [7, 8, 9],
+  deployRows: [5, 6, 7],
   roster: ['bulwark', 'lancer', 'arc', 'salvo', 'mender'],
   enemies: [
     { defId: 'brute', col: 3, row: 2 },
@@ -18,11 +18,11 @@ export const DEFAULT_SCENARIO = Object.freeze({
     { defId: 'bomber', col: 4, row: 0 },
   ],
   defaultDeployment: [
-    { defId: 'bulwark', col: 3, row: 7 },
-    { defId: 'lancer', col: 5, row: 7 },
-    { defId: 'arc', col: 2, row: 8 },
-    { defId: 'mender', col: 4, row: 8 },
-    { defId: 'salvo', col: 4, row: 9 },
+    { defId: 'bulwark', col: 3, row: 5 },
+    { defId: 'lancer', col: 5, row: 5 },
+    { defId: 'arc', col: 2, row: 6 },
+    { defId: 'mender', col: 4, row: 6 },
+    { defId: 'salvo', col: 4, row: 7 },
   ],
 });
 

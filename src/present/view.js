@@ -2,6 +2,7 @@
 // Everything except particles is evaluated from the presentation clock `pt`, so pause, speed
 // changes and seeking all stay consistent. Particles integrate by the clock delta and are skipped
 // for cues replayed silently during a seek.
+// Pilot portraits render in a second, unbloomed pass over the glowing scene so faces stay crisp.
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -12,6 +13,9 @@ import { hexKey } from '../sim/hex.js';
 import { createRng } from '../sim/rng.js';
 import { hexCorners, hexToWorld, worldToHex } from './layout.js';
 import { applyCue, createBoardState } from './boardState.js';
+import { moveProgress } from './motion.js';
+import { CAST } from './cast.js';
+import { portraitCanvas } from './portraits.js';
 
 // Effect lifetimes, in TU of presentation time.
 const FX = { beam: 0.45, slash: 0.25, ring: 0.7, number: 1.7, flash: 0.25, death: 0.4, lunge: 0.3, shake: 0.9 };
@@ -35,7 +39,6 @@ const additive = (color, opacity = 1) =>
     depthWrite: false,
   });
 
-const smooth = (u) => u * u * (3 - 2 * u);
 const clamp01 = (u) => Math.min(1, Math.max(0, u));
 
 export class BattleView {
@@ -63,6 +66,10 @@ export class BattleView {
     this.unitGroup = new THREE.Group();
     this.fxGroup = new THREE.Group();
     this.scene.add(this.boardGroup, this.unitGroup, this.fxGroup);
+    this.tokenScene = new THREE.Scene();
+    this.usePortraits = true;
+    this.speakingId = null;
+    this.ghostId = null;
 
     this.units = new Map();
     this.board = null;
@@ -194,12 +201,14 @@ export class BattleView {
     for (const v of this.units.values()) disposeUnit(v);
     this.units.clear();
     this.unitGroup.clear();
+    this.tokenScene.clear();
     this.defs = setup.defs;
     this.board = createBoardState(setup);
     for (const spec of setup.units) {
       const v = makeUnit(spec, setup.defs[spec.defId]);
       this.units.set(spec.id, v);
       this.unitGroup.add(v.group);
+      this.tokenScene.add(v.token);
     }
   }
 
@@ -228,6 +237,20 @@ export class BattleView {
     this.selectedId = id;
   }
 
+  setPortraits(enabled) {
+    this.usePortraits = enabled;
+  }
+
+  // Unit whose pilot is talking; its token pulses.
+  setSpeaking(id) {
+    this.speakingId = id;
+  }
+
+  // Unit being dragged during deployment; drawn faded at its old hex.
+  setGhost(id) {
+    this.ghostId = id;
+  }
+
   unitAt(hex) {
     if (!this.board) return null;
     for (const s of this.board.units.values()) if (s.alive && s.q === hex.q && s.r === hex.r) return s.id;
@@ -250,7 +273,7 @@ export class BattleView {
     let y = at.y;
     const mv = v.move;
     if (mv && t < mv.t1) {
-      const u = smooth(clamp01((t - mv.t0) / (mv.t1 - mv.t0)));
+      const u = moveProgress(clamp01((t - mv.t0) / (mv.t1 - mv.t0)), mv.chainIn, mv.chainOut);
       x = mv.from.x + (mv.to.x - mv.from.x) * u;
       y = mv.from.y + (mv.to.y - mv.from.y) * u;
     }
@@ -276,7 +299,7 @@ export class BattleView {
     switch (ev.type) {
       case 'move_start': {
         const v = this.units.get(ev.unit);
-        v.move = { t0: cue.t, t1: cue.t1, from: hexToWorld(ev.from), to: hexToWorld(ev.to) };
+        v.move = { t0: cue.t, t1: cue.t1, chainIn: cue.chainIn, chainOut: cue.chainOut, from: hexToWorld(ev.from), to: hexToWorld(ev.to) };
         break;
       }
       case 'attack':
@@ -421,6 +444,9 @@ export class BattleView {
     }
     if (this.bloomEnabled) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
+    this.renderer.autoClear = false;
+    this.renderer.render(this.tokenScene, this.camera);
+    this.renderer.autoClear = true;
   }
 
   renderUnits(pt, dtTU) {
@@ -434,20 +460,38 @@ export class BattleView {
         const u = v.deathT == null ? 1 : (pt - v.deathT) / FX.death;
         if (u >= 1) {
           v.group.visible = false;
+          v.token.visible = false;
           continue;
         }
         opacity = 1 - u;
         scale = 1 + 0.6 * u;
       }
       v.group.visible = true;
+      const portraits = this.usePortraits && !!v.tokenMat;
+      const ghost = v.id === this.ghostId ? 0.3 : 1;
+      v.body.visible = !portraits;
+      v.glowRing.visible = portraits;
+      v.token.visible = portraits;
       v.body.scale.setScalar(scale);
       const flash = clamp01(1 - (pt - v.flashT) / FX.flash);
       v.outlineMat.color.copy(v.baseColor).lerp(WHITE, flash);
-      v.outlineMat.opacity = opacity;
-      v.fillMat.opacity = 0.2 * opacity + 0.3 * flash;
-      v.sideMat.opacity = 0.45 * opacity;
+      v.outlineMat.opacity = opacity * ghost;
+      v.fillMat.opacity = (0.2 * opacity + 0.3 * flash) * ghost;
+      v.sideMat.opacity = 0.45 * opacity * ghost;
 
       const ratio = s.hp / s.maxHp;
+      if (portraits) {
+        const speaking = v.id === this.speakingId;
+        const pulse = speaking ? 1 + 0.08 * Math.sin(pt * 14) : 1;
+        v.token.position.set(p.x, p.y, 0);
+        v.token.scale.setScalar(scale * pulse);
+        v.tokenMat.opacity = opacity * ghost;
+        v.tokenMat.map = s.alive && ratio <= HURT_RATIO ? v.faces.hurt : v.faces.neutral;
+        v.flashMat.opacity = 0.7 * flash * opacity;
+        v.glowRing.scale.setScalar(scale * pulse * (speaking ? 1.1 : 1));
+        v.glowRing.material.color.copy(v.baseColor).lerp(WHITE, Math.max(flash, speaking ? 0.35 : 0));
+        v.glowRing.material.opacity = opacity * ghost;
+      }
       if (ratio > v.lag) v.lag = ratio;
       else v.lag = Math.max(ratio, v.lag - dtTU * 0.6);
       v.hpFg.scale.x = Math.max(1e-4, ratio * HP_W);
@@ -628,6 +672,20 @@ export class BattleView {
 
 const HP_W = 0.9;
 const TRAIL_POINTS = 10;
+const HURT_RATIO = 0.35;
+const tokenGeo = new THREE.CircleGeometry(0.6, 40);
+const glowRingGeo = new THREE.RingGeometry(0.6, 0.7, 40);
+const portraitTextures = new Map();
+
+function portraitTexture(spec, mood) {
+  const key = `${spec.id}|${mood}`;
+  if (!portraitTextures.has(key)) {
+    const tex = new THREE.CanvasTexture(portraitCanvas(spec, mood, 128));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    portraitTextures.set(key, tex);
+  }
+  return portraitTextures.get(key);
+}
 
 function regular(n, radius, rotation) {
   const pts = [];
@@ -693,10 +751,30 @@ function makeUnit(spec, def) {
   hpFg.position.z = 0.002;
   hpGroup.add(hpBg, hpLag, hpFg);
 
+  const glowRing = new THREE.Mesh(glowRingGeo, additive(visual.color, 0.9));
+  glowRing.renderOrder = RO.unit;
+
+  // Portrait token, rendered in the unbloomed token scene. Units without a cast entry keep their shape.
+  const token = new THREE.Group();
+  const portrait = CAST[spec.defId]?.portrait;
+  let tokenMat = null;
+  let flashMat = null;
+  let faces = null;
+  if (portrait) {
+    faces = { neutral: portraitTexture(portrait, 'neutral'), hurt: portraitTexture(portrait, 'hurt') };
+    tokenMat = new THREE.MeshBasicMaterial({ map: faces.neutral, transparent: true, depthTest: false });
+    flashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest: false });
+    const disc = new THREE.Mesh(tokenGeo, tokenMat);
+    const flashDisc = new THREE.Mesh(tokenGeo, flashMat);
+    flashDisc.renderOrder = 1;
+    token.add(disc, flashDisc);
+  }
+
   const group = new THREE.Group();
-  group.add(sideRing, body, hpGroup);
+  group.add(sideRing, glowRing, body, hpGroup);
   const pos = hexToWorld(spec.pos);
   group.position.set(pos.x, pos.y, 0);
+  token.position.copy(group.position);
 
   return {
     id: spec.id,
@@ -706,6 +784,11 @@ function makeUnit(spec, def) {
     baseColor: new THREE.Color(visual.color),
     group,
     body,
+    glowRing,
+    token,
+    tokenMat,
+    flashMat,
+    faces,
     outlineMat,
     fillMat,
     sideMat,
@@ -720,13 +803,15 @@ function makeUnit(spec, def) {
   };
 }
 
+// Shared geometries and portrait textures are kept; per-unit geometry and materials are freed.
 function disposeUnit(v) {
-  v.group.traverse((o) => {
-    if (o.isMesh) {
-      o.geometry.dispose();
+  for (const root of [v.group, v.token]) {
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.geometry !== tokenGeo && o.geometry !== glowRingGeo) o.geometry.dispose();
       o.material.dispose();
-    }
-  });
+    });
+  }
 }
 
 // ---- FX construction ----

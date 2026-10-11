@@ -1,0 +1,6 @@
+# Store and check out text files with LF, regardless of core.autocrlf.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF in batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf

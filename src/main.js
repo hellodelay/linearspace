@@ -1,7 +1,10 @@
-// App shell: deployment, battle playback controls, HUD. Owns no game rules.
+// App shell: deployment, battle playback controls, HUD, chatter. Owns no game rules.
 import { BattleView } from './present/view.js';
 import { Playback, SPEEDS } from './present/playback.js';
 import { CRITICAL_TYPES, buildTimeline, validateTimeline } from './present/timeline.js';
+import { DIALOGUE_CONFIG, activeLine, buildDialogue } from './present/dialogue.js';
+import { CAST } from './present/cast.js';
+import { portraitUrl } from './present/portraits.js';
 import { simulate } from './sim/simulate.js';
 import { DEFAULT_SCENARIO, buildBattleSetup, validateDeployment } from './sim/battle.js';
 import { ROLE_LABELS, UNIT_DEFS } from './sim/data.js';
@@ -11,7 +14,16 @@ import { formatEvent, unitNames } from './sim/format.js';
 
 const SECONDS_PER_TU = 0.8;
 const LOG_LINES = 120;
-const COLORS = { zone: 0x0b2433, range: 0x14485e, self: 0x2a7f9e, enemyRange: 0x3d1020, aoe: 0x47101c };
+const DRAG_THRESHOLD_PX = 6;
+const COLORS = {
+  zone: 0x0b2433,
+  range: 0x14485e,
+  self: 0x2a7f9e,
+  enemyRange: 0x3d1020,
+  aoe: 0x47101c,
+  dropOk: 0x1f7a4a,
+  dropBad: 0x6a1424,
+};
 
 const scenario = DEFAULT_SCENARIO;
 const $ = (id) => document.getElementById(id);
@@ -32,6 +44,12 @@ const el = {
   play: $('btn-play'),
   scrub: $('scrub'),
   speeds: $('speeds'),
+  ghost: $('drag-ghost'),
+  dialogue: $('dialogue'),
+  dlgPortrait: $('dlg-portrait'),
+  dlgCallsign: $('dlg-callsign'),
+  dlgName: $('dlg-name'),
+  dlgText: $('dlg-text'),
 };
 
 const view = new BattleView(el.canvas, el.fx);
@@ -40,17 +58,25 @@ view.setGrid(scenario.grid.width, scenario.grid.height);
 const app = {
   mode: 'deploy',
   deployment: scenario.defaultDeployment.map((d) => ({ ...d })),
-  selectedDef: null,
+  // Deployment inspection: { defId, unitId } of the unit whose stats and range are shown.
+  focus: null,
   inspectId: null,
   playback: null,
   timeline: null,
   result: null,
+  dialogue: [],
+  shownLine: null,
+  shownChars: -1,
+  chatter: true,
   names: {},
   shownTU: -1,
   scrubbing: false,
   deployClock: 0,
 };
 window.linearSpace = { app, view };
+
+const hex6 = (n) => `#${n.toString(16).padStart(6, '0')}`;
+const portraitOf = (defId, mood = 'neutral') => (CAST[defId] ? portraitUrl(CAST[defId].portrait, mood) : '');
 
 // ---- Layout ----
 
@@ -63,48 +89,55 @@ const seed = () => Number(el.seed.value) >>> 0;
 const draftSetup = () => buildBattleSetup({ scenario, deployment: app.deployment, seed: seed() });
 const inZone = (off) => scenario.deployRows.includes(off.row) && off.col >= 0 && off.col < scenario.grid.width;
 const deployIndex = (defId) => app.deployment.findIndex((d) => d.defId === defId);
+const unitIdOf = (defId) => (deployIndex(defId) >= 0 ? `p${deployIndex(defId) + 1}` : null);
 
 function enterDeploy() {
   app.mode = 'deploy';
   app.playback = null;
   app.timeline = null;
   app.inspectId = null;
+  app.focus = null;
   document.body.dataset.mode = 'deploy';
   el.mode.textContent = 'DEPLOY';
   el.tu.textContent = `Seed ${seed()}`;
   hideBanner();
+  showLine(null);
   el.log.innerHTML = '';
   view.clearEffects();
   refreshDeploy();
 }
 
-function refreshDeploy() {
-  const setup = draftSetup();
-  view.loadSetup(setup);
+function zoneColors() {
   const colors = new Map();
   for (const row of scenario.deployRows) {
     for (let col = 0; col < scenario.grid.width; col++) colors.set(hexKey(offsetToAxial(col, row)), COLORS.zone);
   }
-  const shown = app.inspectId ?? (deployIndex(app.selectedDef) >= 0 ? `p${deployIndex(app.selectedDef) + 1}` : null);
-  if (shown) paintRange(colors, setup, shown);
-  view.setHighlights(colors);
-  view.setSelected(shown);
-  renderRoster();
-  renderInspect(shown, setup);
-  const errors = validateDeployment(scenario, app.deployment);
-  el.commit.disabled = errors.length > 0;
-  el.deployMsg.textContent = errors[0] ?? `${app.deployment.length}/${scenario.deployCap} deployed. Tap a card, then a blue hex.`;
+  return colors;
 }
 
-function paintRange(colors, setup, unitId) {
-  const spec = setup.units.find((u) => u.id === unitId);
-  if (!spec) return;
-  const def = setup.defs[spec.defId];
-  const enemy = spec.side === 'enemy';
-  for (const h of hexDisk(spec.pos, def.stats.range)) {
+function paintRange(colors, center, range, enemy) {
+  for (const h of hexDisk(center, range)) {
     if (view.grid.has(h)) colors.set(hexKey(h), enemy ? COLORS.enemyRange : COLORS.range);
   }
-  colors.set(hexKey(spec.pos), enemy ? COLORS.aoe : COLORS.self);
+  colors.set(hexKey(center), enemy ? COLORS.aoe : COLORS.self);
+}
+
+function refreshDeploy() {
+  const setup = draftSetup();
+  view.loadSetup(setup);
+  const colors = zoneColors();
+  const focusId = app.focus?.unitId ?? null;
+  const spec = focusId && setup.units.find((u) => u.id === focusId);
+  if (spec) paintRange(colors, spec.pos, setup.defs[spec.defId].stats.range, spec.side === 'enemy');
+  view.setHighlights(colors);
+  view.setSelected(focusId);
+  renderRoster();
+  if (app.focus) renderInspect(app.focus.defId, spec?.side ?? 'player', focusId);
+  else renderInspect(null);
+  const errors = validateDeployment(scenario, app.deployment);
+  el.commit.disabled = errors.length > 0;
+  el.deployMsg.textContent =
+    errors[0] ?? `${app.deployment.length}/${scenario.deployCap} deployed. Drag units onto blue hexes; drag back to the tray to bench.`;
 }
 
 function renderRoster() {
@@ -112,59 +145,158 @@ function renderRoster() {
   for (const defId of scenario.roster) {
     const def = UNIT_DEFS[defId];
     const placed = deployIndex(defId) >= 0;
-    const card = document.createElement('button');
-    card.className = `card${app.selectedDef === defId ? ' selected' : ''}${placed ? ' placed' : ''}`;
-    card.style.setProperty('--unit-color', `#${def.visual.color.toString(16).padStart(6, '0')}`);
+    const card = document.createElement('div');
+    card.className = `card${app.focus?.defId === defId ? ' selected' : ''}${placed ? ' placed' : ''}`;
+    card.style.setProperty('--unit-color', hex6(def.visual.color));
     card.innerHTML = `
-      <span class="card-name">${def.name}</span>
-      <span class="card-role">${ROLE_LABELS[def.role]}</span>
-      <span class="card-stats">HP ${def.stats.hp} / RNG ${def.stats.range}</span>
-      <span class="card-state">${placed ? (app.selectedDef === defId ? 'tap to bench' : 'deployed') : 'bench'}</span>`;
-    card.addEventListener('click', () => onCard(defId));
+      <img class="card-portrait" src="${portraitOf(defId)}" alt="" draggable="false" />
+      <span class="card-text">
+        <span class="card-name">${def.name}</span>
+        <span class="card-pilot">${CAST[defId]?.pilot ?? ''}</span>
+        <span class="card-role">${ROLE_LABELS[def.role]}</span>
+        <span class="card-state">${placed ? 'deployed' : 'bench'}</span>
+      </span>`;
+    card.addEventListener('pointerdown', (e) => beginPress(e, { defId, unitId: unitIdOf(defId), source: 'card' }));
     el.roster.appendChild(card);
   }
 }
 
-function onCard(defId) {
-  app.inspectId = null;
+// Drop rules: a hex in the zone takes the unit; another player unit there swaps (or is benched,
+// when the dragged unit came from the tray). Dropping on the tray benches a deployed unit.
+function drop(defId, hex, onTray) {
   const idx = deployIndex(defId);
-  if (app.selectedDef === defId && idx >= 0) {
-    app.deployment.splice(idx, 1);
-    app.selectedDef = null;
-  } else {
-    app.selectedDef = defId;
+  if (onTray) {
+    if (idx >= 0) app.deployment.splice(idx, 1);
+    return true;
+  }
+  if (!hex) return false;
+  const off = axialToOffset(hex);
+  if (!inZone(off)) return false;
+  const occupant = view.unitAt(hex);
+  if (occupant?.startsWith('e')) return false;
+  const otherIdx = occupant ? Number(occupant.slice(1)) - 1 : -1;
+  if (otherIdx === idx && idx >= 0) return true;
+  const entry = { defId, col: off.col, row: off.row };
+  if (otherIdx >= 0) {
+    if (idx >= 0) {
+      const mine = app.deployment[idx];
+      app.deployment[otherIdx] = { ...app.deployment[otherIdx], col: mine.col, row: mine.row };
+      app.deployment[idx] = entry;
+    } else {
+      app.deployment[otherIdx] = entry;
+    }
+    return true;
+  }
+  if (idx >= 0) {
+    app.deployment[idx] = entry;
+    return true;
+  }
+  if (app.deployment.length >= scenario.deployCap) {
+    showToast(`Deployment cap is ${scenario.deployCap}`);
+    return false;
+  }
+  app.deployment.push(entry);
+  return true;
+}
+
+function dropPreview(defId, hex, onTray) {
+  const colors = zoneColors();
+  if (onTray || !hex) return colors;
+  const off = axialToOffset(hex);
+  const occupant = view.unitAt(hex);
+  const ok = inZone(off) && !occupant?.startsWith('e');
+  if (ok) paintRange(colors, hex, UNIT_DEFS[defId].stats.range, false);
+  colors.set(hexKey(hex), ok ? COLORS.dropOk : COLORS.dropBad);
+  return colors;
+}
+
+// ---- Pointer: tap vs drag ----
+
+let press = null;
+
+function beginPress(e, target) {
+  if (app.mode !== 'deploy' || e.button > 0) return;
+  press = { ...target, pointerId: e.pointerId, x: e.clientX, y: e.clientY, dragging: false };
+}
+
+function overTray(x, y) {
+  const r = el.roster.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+function overCanvas(x, y) {
+  const r = el.canvas.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+function moveGhost(x, y) {
+  el.ghost.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+}
+
+window.addEventListener('pointermove', (e) => {
+  if (!press || press.battle || e.pointerId !== press.pointerId) return;
+  if (!press.dragging) {
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
+    press.dragging = true;
+    el.ghost.src = portraitOf(press.defId);
+    el.ghost.style.setProperty('--unit-color', hex6(UNIT_DEFS[press.defId].visual.color));
+    el.ghost.hidden = false;
+    view.setGhost(press.unitId);
+    view.setSelected(null);
+    renderInspect(null);
+  }
+  moveGhost(e.clientX, e.clientY);
+  const hex = overCanvas(e.clientX, e.clientY) ? view.pickHex(e.clientX, e.clientY) : null;
+  view.setHighlights(dropPreview(press.defId, hex, overTray(e.clientX, e.clientY)));
+});
+
+function endPress(e, cancelled) {
+  if (!press || press.battle || e.pointerId !== press.pointerId) return;
+  const p = press;
+  press = null;
+  el.ghost.hidden = true;
+  view.setGhost(null);
+  if (p.dragging) {
+    if (!cancelled) {
+      const hex = overCanvas(e.clientX, e.clientY) ? view.pickHex(e.clientX, e.clientY) : null;
+      if (drop(p.defId, hex, overTray(e.clientX, e.clientY))) app.focus = { defId: p.defId, unitId: unitIdOf(p.defId) };
+    }
+  } else if (!cancelled) {
+    const same = app.focus?.defId === p.defId && app.focus?.unitId === p.unitId;
+    app.focus = same ? null : { defId: p.defId, unitId: p.unitId };
   }
   refreshDeploy();
 }
 
-function onDeployTap(hex) {
-  if (!hex) {
-    app.selectedDef = null;
-    app.inspectId = null;
-    return refreshDeploy();
-  }
-  const occupant = view.unitAt(hex);
-  if (occupant?.startsWith('e')) {
-    app.inspectId = app.inspectId === occupant ? null : occupant;
-    return refreshDeploy();
-  }
-  app.inspectId = null;
-  if (occupant) {
-    app.selectedDef = app.deployment[Number(occupant.slice(1)) - 1].defId;
-    return refreshDeploy();
-  }
-  const off = axialToOffset(hex);
-  if (!app.selectedDef || !inZone(off)) return refreshDeploy();
-  const idx = deployIndex(app.selectedDef);
-  if (idx < 0 && app.deployment.length >= scenario.deployCap) {
-    showToast(`Deployment cap is ${scenario.deployCap}`);
+window.addEventListener('pointerup', (e) => endPress(e, false));
+window.addEventListener('pointercancel', (e) => endPress(e, true));
+
+el.canvas.addEventListener('pointerdown', (e) => {
+  if (app.mode === 'battle') {
+    press = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, battle: true };
     return;
   }
-  const entry = { defId: app.selectedDef, col: off.col, row: off.row };
-  if (idx >= 0) app.deployment[idx] = entry;
-  else app.deployment.push(entry);
-  refreshDeploy();
-}
+  const hex = view.pickHex(e.clientX, e.clientY);
+  const occupant = hex ? view.unitAt(hex) : null;
+  if (occupant?.startsWith('p')) {
+    const defId = app.deployment[Number(occupant.slice(1)) - 1].defId;
+    beginPress(e, { defId, unitId: occupant, source: 'board' });
+  } else if (occupant) {
+    const spec = draftSetup().units.find((u) => u.id === occupant);
+    app.focus = app.focus?.unitId === occupant ? null : { defId: spec.defId, unitId: occupant };
+    refreshDeploy();
+  } else {
+    app.focus = null;
+    refreshDeploy();
+  }
+});
+
+el.canvas.addEventListener('pointerup', (e) => {
+  if (!press?.battle || e.pointerId !== press.pointerId) return;
+  const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10;
+  press = null;
+  if (!moved) onBattleTap(view.pickHex(e.clientX, e.clientY));
+});
 
 // ---- Battle ----
 
@@ -194,8 +326,10 @@ function commit() {
   app.mode = 'battle';
   app.result = result;
   app.timeline = timeline;
+  app.dialogue = buildDialogue(timeline, CAST);
   app.names = unitNames(result.log);
   app.inspectId = null;
+  app.focus = null;
   app.shownTU = -1;
   app.playback = new Playback(timeline, sink, { secondsPerTU: SECONDS_PER_TU });
   app.playback.speed = Number(el.speeds.querySelector('.active')?.dataset.speed ?? 1);
@@ -212,7 +346,13 @@ function onBattleTap(hex) {
   const id = hex ? view.unitAt(hex) : null;
   app.inspectId = id && id !== app.inspectId ? id : null;
   view.setSelected(app.inspectId);
-  renderInspect(app.inspectId, app.timeline.setup);
+  renderBattleInspect();
+}
+
+function renderBattleInspect() {
+  if (!app.inspectId) return renderInspect(null);
+  const spec = app.timeline.setup.units.find((u) => u.id === app.inspectId);
+  renderInspect(spec.defId, spec.side, spec.id);
 }
 
 function seekBy(deltaTU) {
@@ -224,25 +364,31 @@ function seekBy(deltaTU) {
 
 // ---- HUD ----
 
-function renderInspect(unitId, setup = app.timeline?.setup) {
-  if (!unitId || !setup) {
+function renderInspect(defId, side = 'player', unitId = null) {
+  if (!defId) {
     el.inspect.hidden = true;
     return;
   }
-  const spec = setup.units.find((u) => u.id === unitId);
-  const def = setup.defs[spec.defId];
-  const s = view.board?.units.get(unitId);
+  const def = app.timeline?.setup.defs[defId] ?? UNIT_DEFS[defId];
+  const s = unitId ? view.board?.units.get(unitId) : null;
   const st = def.stats;
   const a = def.attack;
-  const config = { ...SIM_CONFIG, ...setup.config };
+  const config = { ...SIM_CONFIG, ...app.timeline?.setup.config };
   const shape = a?.shape?.type === 'line' ? `line ${a.shape.length}` : a?.shape?.type === 'circle' ? `circle r${a.shape.radius}` : 'single';
   const attack = a ? `${a.kind}${a.projectiles ? ` x${a.projectiles}` : ''}, ${shape}` : 'none';
   const tgt = def.targeting.mode === 'weakest' ? `weakest within ${def.targeting.range}` : def.targeting.mode.replaceAll('_', ' ');
   const target = s?.targetId ? app.names[s.targetId] ?? s.targetId : '-';
+  const cast = CAST[defId];
   el.inspect.hidden = false;
   el.inspect.innerHTML = `
-    <div class="ins-head"><b>${def.name}</b> <span class="side-${spec.side}">${spec.side}</span></div>
-    <div class="ins-role">${ROLE_LABELS[def.role]}</div>
+    <div class="ins-top">
+      ${cast ? `<img class="ins-portrait" src="${portraitOf(defId, s && s.hp / s.maxHp <= 0.35 ? 'hurt' : 'neutral')}" alt="" />` : ''}
+      <div>
+        <div class="ins-head"><b>${def.name}</b> <span class="side-${side}">${side}</span></div>
+        ${cast ? `<div class="ins-pilot">${cast.pilot} "${cast.callsign}"</div>` : ''}
+        <div class="ins-role">${ROLE_LABELS[def.role]}</div>
+      </div>
+    </div>
     <table>
       <tr><td>HP</td><td>${s ? `${s.hp} / ${s.maxHp}` : st.hp}</td><td>ARM</td><td>${st.armor}</td></tr>
       <tr><td>DMG</td><td>${st.damage}</td><td>RNG</td><td>${st.range}</td></tr>
@@ -274,6 +420,32 @@ function renderLog(tu) {
   el.log.scrollTop = el.log.scrollHeight;
 }
 
+// Shows the chatter line active at pt with a typewriter reveal on the TU clock.
+function updateDialogue(pt) {
+  const line = app.chatter ? activeLine(app.dialogue, pt) : null;
+  if (line !== app.shownLine) showLine(line);
+  if (!line) return;
+  const chars = Math.ceil(line.text.length * Math.min(1, (pt - line.t) / DIALOGUE_CONFIG.revealTU));
+  if (chars !== app.shownChars) {
+    app.shownChars = chars;
+    el.dlgText.textContent = line.text.slice(0, chars);
+  }
+}
+
+function showLine(line) {
+  app.shownLine = line;
+  app.shownChars = -1;
+  view.setSpeaking(line?.unitId ?? null);
+  el.dialogue.hidden = !line;
+  if (!line) return;
+  el.dialogue.dataset.side = line.side;
+  el.dialogue.style.setProperty('--unit-color', hex6(UNIT_DEFS[line.defId]?.visual.color ?? 0xffffff));
+  el.dlgPortrait.src = portraitOf(line.defId, line.mood);
+  el.dlgCallsign.textContent = line.callsign;
+  el.dlgName.textContent = line.name;
+  el.dlgText.textContent = '';
+}
+
 function showBanner(winner) {
   el.banner.hidden = false;
   el.banner.dataset.result = winner;
@@ -298,29 +470,20 @@ function updateHud() {
   el.tu.textContent = `TU ${tu} / ${app.timeline.endTU}  x${pb.speed}`;
   el.play.textContent = pb.paused || pb.finished ? 'Play' : 'Pause';
   if (!app.scrubbing) el.scrub.value = String(pb.pt);
+  updateDialogue(pb.pt);
   if (tu !== app.shownTU) {
     app.shownTU = tu;
     renderLog(tu);
-    if (app.inspectId) renderInspect(app.inspectId);
+    if (app.inspectId) renderBattleInspect();
   }
 }
 
-// ---- Input ----
-
-let down = null;
-el.canvas.addEventListener('pointerdown', (e) => (down = { x: e.clientX, y: e.clientY }));
-el.canvas.addEventListener('pointerup', (e) => {
-  if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) return;
-  down = null;
-  const hex = view.pickHex(e.clientX, e.clientY);
-  if (app.mode === 'deploy') onDeployTap(hex);
-  else onBattleTap(hex);
-});
+// ---- Controls ----
 
 el.commit.addEventListener('click', commit);
 $('btn-reset-formation').addEventListener('click', () => {
   app.deployment = scenario.defaultDeployment.map((d) => ({ ...d }));
-  app.selectedDef = null;
+  app.focus = null;
   refreshDeploy();
 });
 $('btn-new-seed').addEventListener('click', () => {
@@ -368,6 +531,14 @@ $('btn-bloom').addEventListener('click', (e) => {
 $('btn-targets').addEventListener('click', (e) => {
   view.showTargets = !view.showTargets;
   e.currentTarget.classList.toggle('active', view.showTargets);
+});
+$('btn-chatter').addEventListener('click', (e) => {
+  app.chatter = !app.chatter;
+  e.currentTarget.classList.toggle('active', app.chatter);
+});
+$('btn-portraits').addEventListener('click', (e) => {
+  view.setPortraits(!view.usePortraits);
+  e.currentTarget.classList.toggle('active', view.usePortraits);
 });
 
 for (const s of SPEEDS) {

@@ -50,6 +50,25 @@ speed only changes how fast real time advances that clock.
 `validateTimeline()` checks the contract. The tests check it across many seeds and also confirm that
 the cue-driven board matches the sim snapshot at every TU boundary, including after seeking.
 
+### Pilots, portraits and chatter
+
+- [cast.js](src/present/cast.js) gives each unit type a placeholder pilot: name, callsign, portrait
+  spec and combat lines. Pilot assignment, affinities and abilities (GDD 22-25) are not implemented,
+  so pilots are presentation-only for now.
+- [portraits.js](src/present/portraits.js) draws procedural anime-style placeholder portraits on a
+  canvas, with mood variants (neutral, happy, angry, hurt, shout).
+- Units render as portrait tokens by default (header toggle switches back to geometric shapes). This
+  departs from GDD 36, which keeps units geometric and puts portraits next to pilot chatter.
+- [dialogue.js](src/present/dialogue.js) derives chatter from the timeline: opening calls, first
+  attack, kills, low HP, heals, deaths, ally down, overtime and victory. One line at a time; higher
+  priority preempts, cooldowns thin the rest. Choice is hashed from the triggering event, so chatter is
+  deterministic and seek-safe.
+
+### Deployment
+
+Drag a roster card onto a blue hex to deploy, drag a deployed unit to move it, drop it on another
+player unit to swap, or drag it back to the tray to bench it. Tap a unit for stats and range.
+
 ## Assumptions standing in for TBD design (GDD section 45)
 
 All of these live in [src/sim/config.js](src/sim/config.js), [src/sim/data.js](src/sim/data.js) or

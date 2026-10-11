@@ -43,6 +43,8 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
   const rankCounter = new Map();
   const hitTime = new Map();
   const lastHit = new Map();
+  // Latest move cue per unit, to detect steps that start the TU the previous one arrives.
+  const lastMove = new Map();
   const clampPhase = (tu, t) => Math.min(tu + cfg.maxPhase, Math.max(tu, t));
   const push = (t, ev, extra = {}) => cues.push({ t, critical: CRITICAL_TYPES.has(ev.type), ev, ...extra });
   // HP cues carry absolute values, so one unit's hits must keep sim order; a hit never lands before an earlier one.
@@ -63,9 +65,14 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
       case 'move_end':
         push(tu, ev);
         break;
-      case 'move_start':
-        push(tu, ev, { t1: ev.arriveTU });
+      case 'move_start': {
+        const prev = lastMove.get(ev.unit);
+        const chainIn = prev?.t1 === tu;
+        if (chainIn) prev.chainOut = true;
+        push(tu, ev, { t1: ev.arriveTU, chainIn, chainOut: false });
+        lastMove.set(ev.unit, cues[cues.length - 1]);
         break;
+      }
       case 'attack': {
         const rank = rankCounter.get(tu) ?? 0;
         rankCounter.set(tu, rank + 1);

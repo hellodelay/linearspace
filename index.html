@@ -19,6 +19,7 @@
       <span class="title">LINEAR SPACE <small>tactical proto</small></span>
       <span id="mode-label" class="mode">DEPLOY</span>
       <span id="tu-readout" class="tu-readout"></span>
+      <button id="btn-portraits" class="active" title="Show units as pilot portraits or geometric shapes">Portraits</button>
     </header>
 
     <main id="stage">
@@ -28,6 +29,13 @@
       <div id="toast" class="toast" hidden></div>
       <aside id="inspect" class="inspect" hidden></aside>
       <aside id="log" class="log"></aside>
+      <div id="dialogue" class="dialogue" hidden>
+        <img id="dlg-portrait" class="dlg-portrait" alt="" />
+        <div class="dlg-body">
+          <div class="dlg-name"><span id="dlg-callsign" class="dlg-callsign"></span> <span id="dlg-name"></span></div>
+          <div id="dlg-text" class="dlg-text"></div>
+        </div>
+      </div>
     </main>
 
     <footer>
@@ -56,6 +64,7 @@
         <div class="row">
           <button id="btn-redeploy">Redeploy</button>
           <button id="btn-log">Log</button>
+          <button id="btn-chatter" class="active">Chatter</button>
           <button id="btn-targets" class="active">Targets</button>
           <button id="btn-bloom" class="active">Bloom</button>
           <button id="btn-export">Export log</button>
@@ -63,6 +72,7 @@
       </section>
     </footer>
 
+    <img id="drag-ghost" class="drag-ghost" alt="" hidden />
     <script type="module" src="src/main.js"></script>
   </body>
 </html>
