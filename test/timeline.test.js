@@ -94,3 +94,19 @@ test('playback speed scales clock advance only', () => {
   assert.ok(Math.abs(a.playback.pt - b.playback.pt) < 1e-9);
   assert.equal(boardKey(a.sink.board), boardKey(b.sink.board));
 });
+
+test('beam attacks get a cosmetic charge-up that ends exactly when the beam fires', () => {
+  const timeline = buildTimeline(run(481927).log);
+  const attackCues = timeline.cues.filter((c) => c.ev.type === 'attack');
+  const charges = attackCues.filter((c) => c.phase === 'charge');
+  assert.ok(charges.length > 0, 'expected beam charges');
+  for (const c of charges) {
+    assert.equal(c.ev.kind, 'beam');
+    assert.equal(c.critical, false);
+    const fire = attackCues.find((f) => f.ev.attackId === c.ev.attackId && f.phase !== 'charge');
+    assert.equal(c.t1, fire.t);
+    assert.ok(c.t < fire.t && c.t >= 0);
+  }
+  const beams = attackCues.filter((c) => c.ev.kind === 'beam' && c.phase !== 'charge');
+  assert.equal(charges.length, beams.length, 'every beam charges; heals and melee do not');
+});

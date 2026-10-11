@@ -276,8 +276,7 @@ el.canvas.addEventListener('pointerdown', (e) => {
     press = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, battle: true };
     return;
   }
-  const hex = view.pickHex(e.clientX, e.clientY);
-  const occupant = hex ? view.unitAt(hex) : null;
+  const occupant = view.unitAtPointer(e.clientX, e.clientY);
   if (occupant?.startsWith('p')) {
     const defId = app.deployment[Number(occupant.slice(1)) - 1].defId;
     beginPress(e, { defId, unitId: occupant, source: 'board' });
@@ -295,7 +294,7 @@ el.canvas.addEventListener('pointerup', (e) => {
   if (!press?.battle || e.pointerId !== press.pointerId) return;
   const moved = Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10;
   press = null;
-  if (!moved) onBattleTap(view.pickHex(e.clientX, e.clientY));
+  if (!moved) onBattleTap(view.unitAtPointer(e.clientX, e.clientY));
 });
 
 // ---- Battle ----
@@ -342,8 +341,7 @@ function commit() {
   console.info(`Simulated ${result.endTU + 1} TU, ${result.log.length} events in ${simMs.toFixed(1)} ms; winner ${result.winner}`);
 }
 
-function onBattleTap(hex) {
-  const id = hex ? view.unitAt(hex) : null;
+function onBattleTap(id) {
   app.inspectId = id && id !== app.inspectId ? id : null;
   view.setSelected(app.inspectId);
   renderBattleInspect();
@@ -536,6 +534,25 @@ $('btn-chatter').addEventListener('click', (e) => {
   app.chatter = !app.chatter;
   e.currentTarget.classList.toggle('active', app.chatter);
 });
+// Camera view cycles top -> tilt -> iso; the choice is remembered per browser.
+const CAMERA_ORDER = ['top', 'tilt', 'iso'];
+const CAMERA_LABELS = { top: 'View: Top', tilt: 'View: Tilt', iso: 'View: Iso' };
+function setCameraMode(mode, animate) {
+  view.setCameraMode(mode, animate);
+  $('btn-camera').textContent = CAMERA_LABELS[mode];
+  try {
+    localStorage.setItem('linearspace.camera.v2', mode);
+  } catch {}
+}
+$('btn-camera').addEventListener('click', () => {
+  setCameraMode(CAMERA_ORDER[(CAMERA_ORDER.indexOf(view.cameraMode) + 1) % CAMERA_ORDER.length], true);
+});
+let savedCamera = null;
+try {
+  savedCamera = localStorage.getItem('linearspace.camera.v2');
+} catch {}
+setCameraMode(CAMERA_ORDER.includes(savedCamera) ? savedCamera : 'iso', false);
+
 $('btn-portraits').addEventListener('click', (e) => {
   view.setPortraits(!view.usePortraits);
   e.currentTarget.classList.toggle('active', view.usePortraits);

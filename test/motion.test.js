@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { moveProgress } from '../src/present/motion.js';
+import { MISSILE_TIMING, missileProgress, moveProgress } from '../src/present/motion.js';
 import { simulate } from '../src/sim/simulate.js';
 import { DEFAULT_SCENARIO, buildBattleSetup } from '../src/sim/battle.js';
 import { buildTimeline } from '../src/present/timeline.js';
@@ -52,4 +52,23 @@ test('timeline marks back-to-back steps as chained', () => {
     assert.equal(list[0].chainIn, false);
   }
   assert.ok(chained > 0, 'expected at least one multi-hex run');
+});
+
+test('missiles climb at medium speed, hang at the apex, then dive much faster', () => {
+  const rate = (t) => (missileProgress(t + 1e-5) - missileProgress(t - 1e-5)) / 2e-5;
+  const { climbTime, apexProgress } = MISSILE_TIMING;
+  assert.equal(missileProgress(0), 0);
+  assert.equal(missileProgress(1), 1);
+  assert.ok(Math.abs(missileProgress(climbTime) - apexProgress) < 1e-12);
+  let prev = 0;
+  for (let i = 1; i <= 200; i++) {
+    const p = missileProgress(i / 200);
+    assert.ok(p >= prev, `progress reverses at ${i / 200}`);
+    prev = p;
+  }
+  const climbAvg = apexProgress / climbTime;
+  const diveAvg = (1 - apexProgress) / (1 - climbTime);
+  assert.ok(diveAvg > climbAvg * 1.4, 'dive is faster on average');
+  assert.ok(rate(1 - 1e-4) > climbAvg * 2.5, 'impact is much faster than the climb');
+  assert.ok(rate(climbTime) < 0.05, 'brief hang at the apex');
 });

@@ -14,6 +14,8 @@ export const TIMELINE_CONFIG = Object.freeze({
   instant: { start: 0.06, span: 0.5 },
   // Gap between an instant weapon firing and its hit (beam travel / melee swing).
   instantHitDelay: 0.06,
+  // Beam weapons get a cosmetic charge-up cue this long before they fire; it may start in the previous window.
+  beamChargeTU: 0.7,
   // Projectiles from one attack launch across [start, start + span); each keeps its offset on impact.
   salvo: { start: 0.04, span: 0.8 },
   timeoutHitPhase: 0.35,
@@ -85,6 +87,7 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
           const fire = tu + cfg.instant.start + (count > 1 ? (cfg.instant.span * rank) / (count - 1) : 0);
           const hit = clampPhase(tu, fire + cfg.instantHitDelay);
           hitTime.set(ev.attackId, hit);
+          if (ev.kind === 'beam') push(Math.max(0, fire - cfg.beamChargeTU), ev, { phase: 'charge', t1: fire });
           push(fire, ev, { t1: hit });
         }
         break;
