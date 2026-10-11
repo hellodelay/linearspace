@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Linear Space Tactical</title>
+    <link rel="stylesheet" href="src/style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body data-mode="deploy">
+    <header>
+      <span class="title">LINEAR SPACE <small>tactical proto</small></span>
+      <span id="mode-label" class="mode">DEPLOY</span>
+      <span id="tu-readout" class="tu-readout"></span>
+    </header>
+
+    <main id="stage">
+      <canvas id="view"></canvas>
+      <div id="fx" class="fx"></div>
+      <div id="banner" class="banner" hidden></div>
+      <div id="toast" class="toast" hidden></div>
+      <aside id="inspect" class="inspect" hidden></aside>
+      <aside id="log" class="log"></aside>
+    </main>
+
+    <footer>
+      <section class="deploy-only">
+        <div id="roster" class="roster"></div>
+        <div class="row">
+          <span id="deploy-msg" class="msg"></span>
+        </div>
+        <div class="row">
+          <label class="seed">Seed <input id="seed" type="number" value="481927" inputmode="numeric" /></label>
+          <button id="btn-new-seed">New seed</button>
+          <button id="btn-reset-formation">Reset</button>
+          <button id="btn-commit" class="primary">Commit</button>
+        </div>
+      </section>
+
+      <section class="battle-only">
+        <input id="scrub" type="range" min="0" max="1" step="0.01" value="0" />
+        <div class="row">
+          <button id="btn-restart" title="Restart">Restart</button>
+          <button id="btn-back" title="Back one TU (Left)">-1 TU</button>
+          <button id="btn-play" class="primary" title="Play / pause (Space)">Pause</button>
+          <button id="btn-step" title="Step one TU (Right)">+1 TU</button>
+          <span id="speeds" class="speeds"></span>
+        </div>
+        <div class="row">
+          <button id="btn-redeploy">Redeploy</button>
+          <button id="btn-log">Log</button>
+          <button id="btn-targets" class="active">Targets</button>
+          <button id="btn-bloom" class="active">Bloom</button>
+          <button id="btn-export">Export log</button>
+        </div>
+      </section>
+    </footer>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Logs and exported battle logs
+*.log
+npm-debug.log*
+battle-*.json
+
+# Test / coverage output
+coverage/
+.nyc_output/
+
+# Build output
+dist/
+build/
+
+# Environment
+.env
+.env.*
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp files
+*.tmp
+*.bak
+tmp/
+temp/
