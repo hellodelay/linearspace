@@ -14,8 +14,12 @@ export const TIMELINE_CONFIG = Object.freeze({
   instant: { start: 0.06, span: 0.5 },
   // Gap between an instant weapon firing and its hit (beam travel / melee swing).
   instantHitDelay: 0.06,
+  // Equipment trigger effects play this long after the event that set them off.
+  triggerDelay: 0.04,
   // Beam weapons get a cosmetic charge-up cue this long before they fire; it may start in the previous window.
   beamChargeTU: 0.7,
+  // Melee attacks get a cosmetic sword wind-up cue this long before they fire.
+  meleeWindupTU: 0.6,
   // Projectiles from one attack launch across [start, start + span); each keeps its offset on impact.
   salvo: { start: 0.04, span: 0.8 },
   timeoutHitPhase: 0.35,
@@ -48,7 +52,12 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
   // Latest move cue per unit, to detect steps that start the TU the previous one arrives.
   const lastMove = new Map();
   const clampPhase = (tu, t) => Math.min(tu + cfg.maxPhase, Math.max(tu, t));
-  const push = (t, ev, extra = {}) => cues.push({ t, critical: CRITICAL_TYPES.has(ev.type), ev, ...extra });
+  // Latest presentation time of each log event, so effects can follow the cue that caused them.
+  const timeBySeq = new Map();
+  const push = (t, ev, extra = {}) => {
+    timeBySeq.set(ev.seq, t);
+    cues.push({ t, critical: CRITICAL_TYPES.has(ev.type), ev, ...extra });
+  };
   // HP cues carry absolute values, so one unit's hits must keep sim order; a hit never lands before an earlier one.
   const scheduleHit = (unit, tu, desired) => {
     const k = `${unit}@${tu}`;
@@ -65,8 +74,15 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
       case 'target':
       case 'timeout_begin':
       case 'move_end':
+      case 'buff_end':
         push(tu, ev);
         break;
+      case 'equip_trigger': {
+        const t = clampPhase(tu, (timeBySeq.get(ev.causeSeq) ?? tu) + cfg.triggerDelay);
+        hitTime.set(ev.triggerId, t);
+        push(t, ev);
+        break;
+      }
       case 'move_start': {
         const prev = lastMove.get(ev.unit);
         const chainIn = prev?.t1 === tu;
@@ -88,6 +104,7 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
           const hit = clampPhase(tu, fire + cfg.instantHitDelay);
           hitTime.set(ev.attackId, hit);
           if (ev.kind === 'beam') push(Math.max(0, fire - cfg.beamChargeTU), ev, { phase: 'charge', t1: fire });
+          if (ev.kind === 'melee') push(Math.max(0, fire - cfg.meleeWindupTU), ev, { phase: 'windup', t1: hit });
           push(fire, ev, { t1: hit });
         }
         break;
@@ -111,7 +128,7 @@ export function buildTimeline(log, cfg = TIMELINE_CONFIG) {
         const src = ev.source;
         const desired = src.timeout
           ? tu + cfg.timeoutHitPhase
-          : (hitTime.get(src.projectileId ?? src.attackId) ?? tu + cfg.timeoutHitPhase);
+          : (hitTime.get(src.projectileId ?? src.triggerId ?? src.attackId) ?? tu + cfg.timeoutHitPhase);
         push(scheduleHit(ev.unit, tu, desired), ev);
         break;
       }

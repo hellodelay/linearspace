@@ -434,3 +434,93 @@ button:disabled {
 .dialogue[hidden] {
   display: none;
 }
+
+/* Equipment */
+.roster[hidden] {
+  display: none;
+}
+.tray-tabs {
+  display: flex;
+  gap: 4px;
+}
+.tray-tabs button {
+  min-height: 28px;
+  padding: 4px 12px;
+}
+.item-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  padding: 0 4px;
+  border: 2px solid var(--unit-color);
+  border-radius: 6px;
+  background: #0a1622;
+  color: var(--unit-color);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  box-shadow: 0 0 8px -3px var(--unit-color);
+  pointer-events: none;
+}
+.item-badge.big {
+  min-width: 52px;
+  height: 52px;
+  font-size: 14px;
+}
+.card.item {
+  min-width: 170px;
+}
+.card-slots {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.card-slots i {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+.drag-item {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10;
+}
+.drag-item[hidden] {
+  display: none;
+}
+.inspect .slots {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0;
+  pointer-events: auto;
+}
+.inspect .slot {
+  min-height: 26px;
+  min-width: 44px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--unit-color);
+  border: 1px solid var(--unit-color);
+}
+.inspect .slot.empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+}
+.inspect .mod {
+  color: var(--good);
+}
+.num.proc {
+  color: #ffd84a;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}

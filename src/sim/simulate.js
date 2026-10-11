@@ -1,22 +1,29 @@
 // Deterministic hex-grid battle simulator. No rendering, timing, or platform dependencies.
 //
 // ASSUMPTION (GDD 15, TBD) - per-TU phase order:
-//   1. Move completion   units whose hex crossing ends this TU become idle
-//   2. Projectile impact  projectiles due this TU land; their damage is queued
-//   3. Targeting          invalid targets are dropped, idle units acquire new ones
-//   4. Actions            in action order: attack if in range and ready, else step toward target
-//   5. Timeout damage     queued for every living unit once timeoutTU is reached
-//   6. Damage / healing   queue resolved in order; simultaneous, so units killed this TU still acted
-//   7. Death              units at 0 HP are removed and free their hex
-//   8. Victory check
+//   1. Buff expiry       equipment buffs whose duration ended are removed
+//   2. Move completion   units whose hex crossing ends this TU become idle
+//   3. Projectile impact  projectiles due this TU land; their damage is queued
+//   4. Targeting          invalid targets are dropped, idle units acquire new ones
+//   5. Actions            in action order: attack if in range and ready, else step toward target
+//   6. Timeout damage     queued for every living unit once timeoutTU is reached
+//   7. Damage / healing   queue resolved in order; simultaneous, so units killed this TU still acted
+//   8. Death              units at 0 HP are removed and free their hex
+//      Equipment triggered by deaths (OnKill, OnDeath) queues more effects; 7-8 repeat until settled.
+//   9. Victory check
 // Action order: setup order within each side, interleaved player/enemy. Earlier units win hex contests.
 // A moving unit occupies its destination hex as soon as it starts the crossing.
+// Equipment triggers fire in equipment-slot order. Buffs apply immediately, so a buff gained from one
+// hit already counts for later hits in the same TU.
 
 import { createRng } from './rng.js';
-import { DIRECTIONS, hexDistance, hexKey } from './hex.js';
+import { DIRECTIONS, hexDisk, hexDistance, hexKey } from './hex.js';
 import { createGrid } from './grid.js';
 import { attackHexes } from './geometry.js';
 import { SIM_CONFIG, attackIntervalTU, moveTUPerHex } from './config.js';
+import { applyMods } from './equipment.js';
+
+const STAT_KEYS = ['hp', 'damage', 'armor', 'moveSpeed', 'attackSpeed'];
 
 export function simulate(setup, options = {}) {
   const config = { ...SIM_CONFIG, ...setup.config };
@@ -38,13 +45,32 @@ export function simulate(setup, options = {}) {
   };
 }
 
+// Base stats with static equipment mods applied, plus the unit's equipment triggers in slot order.
+export function equippedStats(def, equipmentIds = [], equipmentDefs = {}) {
+  const items = equipmentIds.map((id) => {
+    const item = equipmentDefs[id];
+    if (!item) throw new Error(`Unknown equipment: ${id}`);
+    return { id, ...item };
+  });
+  const stats = {};
+  for (const key of STAT_KEYS) {
+    stats[key] = applyMods(
+      def.stats[key],
+      items.flatMap((it) => (it.mods ?? []).filter((m) => m.stat === key)),
+    );
+  }
+  stats.hp = Math.round(stats.hp);
+  const triggers = items.flatMap((it) => (it.triggers ?? []).map((t) => ({ itemId: it.id, ...t })));
+  return { stats, triggers };
+}
+
 function createContext(setup, config) {
   const grid = createGrid(setup.grid.width, setup.grid.height);
   const sideIndex = { player: 0, enemy: 0 };
   const units = setup.units.map((spec) => {
     const def = setup.defs[spec.defId];
     if (!def) throw new Error(`Unknown unit def: ${spec.defId}`);
-    const s = def.stats;
+    const { stats, triggers } = equippedStats(def, spec.equipment, setup.equipment);
     return {
       id: spec.id,
       defId: spec.defId,
@@ -52,17 +78,15 @@ function createContext(setup, config) {
       sideOrder: sideIndex[spec.side]++,
       q: spec.pos.q,
       r: spec.pos.r,
-      hp: s.hp,
-      maxHp: s.hp,
-      damage: s.damage,
-      armor: s.armor,
-      range: s.range,
-      moveTU: moveTUPerHex(s.moveSpeed, config),
-      attackTU: attackIntervalTU(s.attackSpeed, config),
+      hp: stats.hp,
+      maxHp: stats.hp,
+      stats,
+      triggers,
+      buffs: [],
+      range: def.stats.range,
       attack: def.attack ?? null,
       targeting: def.targeting ?? { mode: 'closest' },
       targetId: null,
-      followId: null,
       moving: null,
       nextAttackTU: 0,
       lastHitBy: null,
@@ -92,18 +116,35 @@ function createContext(setup, config) {
     queue: [],
     nextAttackId: 1,
     nextProjectileId: 1,
+    nextTriggerId: 1,
     tu: 0,
     log: [],
     result: null,
+    // Returns the new event's seq so effects can point back at their cause.
     emit(type, data) {
-      ctx.log.push({ seq: ctx.log.length, tu: ctx.tu, type, ...data });
+      const seq = ctx.log.length;
+      ctx.log.push({ seq, tu: ctx.tu, type, ...data });
+      return seq;
     },
   };
   return ctx;
 }
 
+// Current stat value including active buffs.
+function stat(ctx, u, key) {
+  const mods = [];
+  for (const b of u.buffs) for (const m of b.mods) if (m.stat === key) mods.push(m);
+  return mods.length ? applyMods(u.stats[key], mods) : u.stats[key];
+}
+
 function step(ctx) {
   const { tu, config } = ctx;
+
+  for (const u of ctx.order) {
+    if (!u.alive || !u.buffs.length) continue;
+    for (const b of u.buffs) if (b.expiresTU <= tu) ctx.emit('buff_end', { unit: u.id, item: b.item });
+    u.buffs = u.buffs.filter((b) => b.expiresTU > tu);
+  }
 
   for (const u of ctx.order) {
     if (u.alive && u.moving && u.moving.arriveTU === tu) {
@@ -126,9 +167,42 @@ function step(ctx) {
     }
   }
 
-  resolveQueue(ctx);
-  resolveDeaths(ctx);
+  // Death triggers can queue more damage or healing; settle until nothing is pending.
+  do {
+    resolveQueue(ctx);
+    resolveDeaths(ctx);
+  } while (ctx.queue.length);
   checkVictory(ctx);
+}
+
+// ---- Equipment triggers ----
+
+function fireTriggers(ctx, u, on, causeSeq) {
+  for (const t of u.triggers) {
+    if (t.on !== on) continue;
+    const e = t.effect;
+    const triggerId = `q${ctx.nextTriggerId++}`;
+    const base = { triggerId, unit: u.id, item: t.itemId, on, effect: e.type, causeSeq };
+    const source = { unit: u.id, triggerId };
+    if (e.type === 'buff') {
+      const expiresTU = ctx.tu + e.durationTU;
+      const existing = u.buffs.find((b) => b.item === t.itemId);
+      if (existing) existing.expiresTU = expiresTU;
+      else u.buffs.push({ item: t.itemId, mods: e.mods, expiresTU });
+      ctx.emit('equip_trigger', { ...base, expiresTU });
+    } else if (e.type === 'heal') {
+      ctx.emit('equip_trigger', base);
+      ctx.queue.push({ kind: 'heal', targetId: u.id, raw: e.amount, source });
+    } else if (e.type === 'blast') {
+      const hexes = hexDisk(pos(u), e.radius).filter((h) => ctx.grid.has(h));
+      ctx.emit('equip_trigger', { ...base, hexes });
+      for (const victim of victimsOn(ctx, hexes, u.side)) {
+        ctx.queue.push({ kind: 'damage', targetId: victim.id, raw: e.damage, source });
+      }
+    } else {
+      throw new Error(`Unknown equipment effect: ${e.type}`);
+    }
+  }
 }
 
 // ---- Targeting ----
@@ -217,7 +291,8 @@ function follow(ctx, u) {
 }
 
 function tryMove(ctx, u, goal, range) {
-  if (u.moveTU === Infinity) return;
+  const moveTU = moveTUPerHex(stat(ctx, u, 'moveSpeed'), ctx.config);
+  if (moveTU === Infinity) return;
   const next = findStep(ctx, u, goal, range);
   if (!next) return;
   const from = pos(u);
@@ -225,7 +300,7 @@ function tryMove(ctx, u, goal, range) {
   ctx.occupancy.set(hexKey(next), u.id);
   u.q = next.q;
   u.r = next.r;
-  const arriveTU = ctx.tu + u.moveTU;
+  const arriveTU = ctx.tu + moveTU;
   u.moving = { arriveTU };
   ctx.emit('move_start', { unit: u.id, from, to: pos(u), arriveTU });
 }
@@ -272,19 +347,21 @@ function performAttack(ctx, u, target) {
   const a = u.attack;
   const attackId = `a${ctx.nextAttackId++}`;
   const targetHex = pos(target);
-  u.nextAttackTU = ctx.tu + u.attackTU;
+  const damage = stat(ctx, u, 'damage');
+  u.nextAttackTU = ctx.tu + attackIntervalTU(stat(ctx, u, 'attackSpeed'), ctx.config);
   const source = { unit: u.id, attackId };
 
   if (a.kind === 'heal') {
-    ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes: [targetHex], projectiles: [] });
-    ctx.queue.push({ kind: 'heal', targetId: target.id, raw: u.damage, source });
+    const seq = ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes: [targetHex], projectiles: [] });
+    ctx.queue.push({ kind: 'heal', targetId: target.id, raw: damage, source });
+    fireTriggers(ctx, u, 'attack', seq);
     return;
   }
 
   if (a.projectiles) {
     const ids = [];
     for (let i = 0; i < a.projectiles; i++) ids.push(`m${ctx.nextProjectileId++}`);
-    ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes: [], projectiles: ids });
+    const seq = ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes: [], projectiles: ids });
     ids.forEach((projectileId, index) => {
       const p = {
         id: projectileId,
@@ -296,7 +373,7 @@ function performAttack(ctx, u, target) {
         targetHex,
         homing: !!a.homing,
         shape: a.shape,
-        damage: u.damage,
+        damage,
         impactTU: ctx.tu + Math.max(1, a.travelTU ?? 1),
       };
       ctx.projectiles.push(p);
@@ -313,14 +390,16 @@ function performAttack(ctx, u, target) {
         impactTU: p.impactTU,
       });
     });
+    fireTriggers(ctx, u, 'attack', seq);
     return;
   }
 
   const hexes = attackHexes(a.shape, u, targetHex).filter((h) => ctx.grid.has(h));
-  ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes, projectiles: [] });
+  const seq = ctx.emit('attack', { attackId, unit: u.id, target: target.id, kind: a.kind, targetHex, hexes, projectiles: [] });
   for (const victim of victimsOn(ctx, hexes, u.side)) {
-    ctx.queue.push({ kind: 'damage', targetId: victim.id, raw: u.damage, source });
+    ctx.queue.push({ kind: 'damage', targetId: victim.id, raw: damage, source });
   }
+  fireTriggers(ctx, u, 'attack', seq);
 }
 
 function victimsOn(ctx, hexes, attackerSide) {
@@ -356,6 +435,7 @@ function resolveImpacts(ctx) {
 
 // ---- Resolution ----
 
+// Triggers fired while resolving append to the queue; for-of picks them up in the same pass.
 function resolveQueue(ctx) {
   const { config, rng } = ctx;
   for (const q of ctx.queue) {
@@ -363,17 +443,19 @@ function resolveQueue(ctx) {
     if (!t.alive || t.hp <= 0) continue;
     const hpBefore = t.hp;
     if (q.kind === 'heal') {
-      const amount = Math.min(q.raw, t.maxHp - t.hp);
+      const amount = Math.min(Math.round(q.raw), t.maxHp - t.hp);
       if (amount <= 0) continue;
       t.hp += amount;
       ctx.emit('heal', { unit: t.id, amount, hpBefore, hpAfter: t.hp, source: q.source });
       continue;
     }
     const roll = config.damageVariance ? 1 + config.damageVariance * (2 * rng.next() - 1) : 1;
-    const amount = Math.max(config.minDamage, Math.round(q.raw * roll) - (q.ignoreArmor ? 0 : t.armor));
+    const armor = q.ignoreArmor ? 0 : stat(ctx, t, 'armor');
+    const amount = Math.max(config.minDamage, Math.round(q.raw * roll - armor));
     t.hp = Math.max(0, t.hp - amount);
     if (q.source.unit) t.lastHitBy = q.source.unit;
-    ctx.emit('damage', { unit: t.id, amount, hpBefore, hpAfter: t.hp, source: q.source });
+    const seq = ctx.emit('damage', { unit: t.id, amount, hpBefore, hpAfter: t.hp, source: q.source });
+    if (t.hp > 0) fireTriggers(ctx, t, 'damaged', seq);
   }
   ctx.queue = [];
 }
@@ -383,8 +465,12 @@ function resolveDeaths(ctx) {
     if (!u.alive || u.hp > 0) continue;
     u.alive = false;
     u.moving = null;
+    u.buffs = [];
     ctx.occupancy.delete(hexKey(u));
-    ctx.emit('death', { unit: u.id, at: pos(u), killer: u.lastHitBy });
+    const seq = ctx.emit('death', { unit: u.id, at: pos(u), killer: u.lastHitBy });
+    fireTriggers(ctx, u, 'death', seq);
+    const killer = u.lastHitBy ? ctx.byId.get(u.lastHitBy) : null;
+    if (killer?.alive && killer.hp > 0) fireTriggers(ctx, killer, 'kill', seq);
   }
 }
 

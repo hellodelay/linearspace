@@ -110,3 +110,18 @@ test('beam attacks get a cosmetic charge-up that ends exactly when the beam fire
   const beams = attackCues.filter((c) => c.ev.kind === 'beam' && c.phase !== 'charge');
   assert.equal(charges.length, beams.length, 'every beam charges; heals and melee do not');
 });
+
+test('melee attacks get a cosmetic sword wind-up that ends at the hit', () => {
+  const timeline = buildTimeline(run(481927).log);
+  const attackCues = timeline.cues.filter((c) => c.ev.type === 'attack');
+  const windups = attackCues.filter((c) => c.phase === 'windup');
+  const swings = attackCues.filter((c) => c.ev.kind === 'melee' && !c.phase);
+  assert.ok(windups.length > 0, 'expected melee wind-ups');
+  assert.equal(windups.length, swings.length);
+  for (const w of windups) {
+    const fire = swings.find((f) => f.ev.attackId === w.ev.attackId);
+    assert.equal(w.critical, false);
+    assert.equal(w.t1, fire.t1, 'wind-up ends on the critical hit time');
+    assert.ok(w.t < fire.t && w.t >= 0);
+  }
+});

@@ -57,12 +57,41 @@ the cue-driven board matches the sim snapshot at every TU boundary, including af
   so pilots are presentation-only for now.
 - [portraits.js](src/present/portraits.js) draws procedural anime-style placeholder portraits on a
   canvas, with mood variants (neutral, happy, angry, hurt, shout).
-- Units render as portrait tokens by default (header toggle switches back to geometric shapes). This
+- By default, units render as slanted cards (the header toggle switches back to geometric shapes). This
   departs from GDD 36, which keeps units geometric and puts portraits next to pilot chatter.
+  - The card's slices, left to right: HP bar, resource bar, unit badge, pilot portrait.
+  - An equipment strip below the card is split into one slice per slot.
+  - The resource bar is a placeholder: it shows attack charge, filling between shots, until the sim
+    has a resource.
+  - [unitIcons.js](src/present/unitIcons.js) draws placeholder unit badges from each unit's shape.
 - [dialogue.js](src/present/dialogue.js) derives chatter from the timeline: opening calls, first
   attack, kills, low HP, heals, deaths, ally down, overtime and victory. One line at a time; higher
   priority preempts, cooldowns thin the rest. Choice is hashed from the triggering event, so chatter is
   deterministic and seek-safe.
+
+### Equipment
+
+Each unit has 3 Equipment slots (GDD 20). [equipment.js](src/sim/equipment.js) holds a placeholder pool
+of 10 items:
+
+- **Stat mods:** flat or percent changes to HP, Damage, Armor, Move Speed or Attack Speed.
+- **Triggers:** OnDamage, OnAttack, OnKill or OnDeath. A trigger can grant a timed buff, repair the
+  unit, or set off a blast.
+
+Triggers resolve inside the simulation and are logged as `equip_trigger` events, with the seq of the
+event that caused them. Buff expiry is logged as `buff_end`. The presentation plays each trigger just
+after its cause.
+
+There is no shop yet, so the deployment screen has a free **Armory** tab. Drag an item onto a deployed
+unit to equip it, and tap a filled slot in the unit panel to remove it. A unit keeps its equipment when
+benched.
+
+Assumptions (GDD 20 TBD, see [config.js](src/sim/config.js)):
+
+- flat mods apply before percent mods, and percent mods add together
+- one copy of each item per unit
+- re-triggering a buff refreshes its duration instead of stacking
+- death-triggered effects resolve in the same TU
 
 ### Deployment
 

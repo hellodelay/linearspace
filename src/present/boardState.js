@@ -1,8 +1,10 @@
+import { equippedStats } from '../sim/simulate.js';
+
 // Board state driven only by critical cues. The view renders from it; tests compare it to sim snapshots.
 export function createBoardState(setup) {
   const units = new Map();
   for (const u of setup.units) {
-    const hp = setup.defs[u.defId].stats.hp;
+    const hp = equippedStats(setup.defs[u.defId], u.equipment, setup.equipment).stats.hp;
     units.set(u.id, { id: u.id, q: u.pos.q, r: u.pos.r, hp, maxHp: hp, alive: true, targetId: null });
   }
   return { units, winner: null, overtime: false };

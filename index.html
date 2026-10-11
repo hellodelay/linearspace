@@ -41,7 +41,12 @@
 
     <footer>
       <section class="deploy-only">
+        <div class="tray-tabs">
+          <button id="tab-units" class="active">Units</button>
+          <button id="tab-armory">Armory</button>
+        </div>
         <div id="roster" class="roster"></div>
+        <div id="armory" class="roster" hidden></div>
         <div class="row">
           <span id="deploy-msg" class="msg"></span>
         </div>
@@ -74,6 +79,7 @@
     </footer>
 
     <img id="drag-ghost" class="drag-ghost" alt="" hidden />
+    <div id="drag-item" class="drag-item item-badge" hidden></div>
     <script type="module" src="src/main.js"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 import { offsetToAxial } from '../src/sim/hex.js';
+import { EQUIPMENT_DEFS } from '../src/sim/equipment.js';
 
 export const TEST_DEFS = {
   inert: {
@@ -36,6 +37,20 @@ export const TEST_DEFS = {
     attack: { kind: 'melee', shape: { type: 'single' } },
     targeting: { mode: 'closest' },
   },
+  slowgun: {
+    name: 'Slowgun',
+    role: 'mage',
+    stats: { hp: 1000, damage: 6, armor: 0, moveSpeed: 0, attackSpeed: 2, range: 10 },
+    attack: { kind: 'beam', shape: { type: 'single' } },
+    targeting: { mode: 'closest' },
+  },
+  wall: {
+    name: 'Wall',
+    role: 'vanguard',
+    stats: { hp: 10000, damage: 0, armor: 0, moveSpeed: 0, attackSpeed: 1, range: 1 },
+    attack: null,
+    targeting: { mode: 'closest' },
+  },
   ranger: {
     name: 'Ranger',
     role: 'mage',
@@ -45,13 +60,14 @@ export const TEST_DEFS = {
   },
 };
 
-// units: [id, defId, side, col, row]
+// units: [id, defId, side, col, row, equipment?]
 export function makeSetup({ width = 8, height = 10, seed = 1, units, config }) {
   return {
     seed,
     grid: { width, height },
-    units: units.map(([id, defId, side, col, row]) => ({ id, defId, side, pos: offsetToAxial(col, row) })),
+    units: units.map(([id, defId, side, col, row, equipment = []]) => ({ id, defId, side, pos: offsetToAxial(col, row), equipment })),
     defs: TEST_DEFS,
+    equipment: EQUIPMENT_DEFS,
     config,
   };
 }

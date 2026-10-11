@@ -3,6 +3,8 @@
 // hash of the triggering event, so the same log always produces the same chatter, and lines are
 // placed on the TU clock so seeking and speed changes stay consistent.
 
+import { equippedStats } from '../sim/simulate.js';
+
 export const DIALOGUE_CONFIG = Object.freeze({
   leadTU: 0.1,
   durationTU: 3.2,
@@ -36,7 +38,7 @@ export function buildDialogue(timeline, cast, cfg = DIALOGUE_CONFIG) {
   for (const u of setup.units) {
     const n = (perDef.get(u.defId) ?? 0) + 1;
     perDef.set(u.defId, n);
-    const hp = setup.defs[u.defId].stats.hp;
+    const hp = equippedStats(setup.defs[u.defId], u.equipment, setup.equipment).stats.hp;
     units.set(u.id, { ...u, n, hp, maxHp: hp, alive: true, lowHp: false, healed: false, attacked: false });
   }
   const speakerName = (u) => {

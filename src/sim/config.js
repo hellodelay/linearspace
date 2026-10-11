@@ -22,6 +22,11 @@ export const SIM_CONFIG = Object.freeze({
   canAttackWhileMoving: false,
   // ASSUMPTION (GDD 17.4): supports with nobody to heal stay within this many hexes of the closest ally.
   supportFollowRange: 2,
+  // GDD 20: generic Equipment slots per unit. Temporary extra slots are not implemented.
+  equipmentSlots: 3,
+  // ASSUMPTION (GDD 20, TBD): a unit cannot equip two copies of the same item, and re-triggering a
+  // buff refreshes its duration instead of stacking.
+  uniqueEquipmentPerUnit: true,
 });
 
 export function moveTUPerHex(moveSpeed, config = SIM_CONFIG) {

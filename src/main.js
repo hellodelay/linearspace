@@ -5,7 +5,8 @@ import { CRITICAL_TYPES, buildTimeline, validateTimeline } from './present/timel
 import { DIALOGUE_CONFIG, activeLine, buildDialogue } from './present/dialogue.js';
 import { CAST } from './present/cast.js';
 import { portraitUrl } from './present/portraits.js';
-import { simulate } from './sim/simulate.js';
+import { equippedStats, simulate } from './sim/simulate.js';
+import { EQUIPMENT_DEFS } from './sim/equipment.js';
 import { DEFAULT_SCENARIO, buildBattleSetup, validateDeployment } from './sim/battle.js';
 import { ROLE_LABELS, UNIT_DEFS } from './sim/data.js';
 import { SIM_CONFIG, attackIntervalTU, moveTUPerHex } from './sim/config.js';
@@ -45,6 +46,10 @@ const el = {
   scrub: $('scrub'),
   speeds: $('speeds'),
   ghost: $('drag-ghost'),
+  itemGhost: $('drag-item'),
+  armory: $('armory'),
+  tabUnits: $('tab-units'),
+  tabArmory: $('tab-armory'),
   dialogue: $('dialogue'),
   dlgPortrait: $('dlg-portrait'),
   dlgCallsign: $('dlg-callsign'),
@@ -58,7 +63,10 @@ view.setGrid(scenario.grid.width, scenario.grid.height);
 const app = {
   mode: 'deploy',
   deployment: scenario.defaultDeployment.map((d) => ({ ...d })),
-  // Deployment inspection: { defId, unitId } of the unit whose stats and range are shown.
+  // Equipment per roster unit ({ defId: [equipmentId] }); kept when a unit is benched.
+  loadout: structuredClone(scenario.defaultLoadout ?? {}),
+  trayTab: 'units',
+  // Deployment inspection: { defId, unitId } of the unit whose stats and range are shown, or { itemId }.
   focus: null,
   inspectId: null,
   playback: null,
@@ -86,7 +94,8 @@ view.resize(el.stage.clientWidth, el.stage.clientHeight);
 // ---- Deployment ----
 
 const seed = () => Number(el.seed.value) >>> 0;
-const draftSetup = () => buildBattleSetup({ scenario, deployment: app.deployment, seed: seed() });
+const draftSetup = () => buildBattleSetup({ scenario, deployment: app.deployment, seed: seed(), loadout: app.loadout });
+const item6 = (id) => hex6(EQUIPMENT_DEFS[id]?.color ?? 0xffffff);
 const inZone = (off) => scenario.deployRows.includes(off.row) && off.col >= 0 && off.col < scenario.grid.width;
 const deployIndex = (defId) => app.deployment.findIndex((d) => d.defId === defId);
 const unitIdOf = (defId) => (deployIndex(defId) >= 0 ? `p${deployIndex(defId) + 1}` : null);
@@ -132,12 +141,62 @@ function refreshDeploy() {
   view.setHighlights(colors);
   view.setSelected(focusId);
   renderRoster();
-  if (app.focus) renderInspect(app.focus.defId, spec?.side ?? 'player', focusId);
+  renderArmory();
+  if (app.focus?.itemId) renderItemInspect(app.focus.itemId);
+  else if (app.focus) renderInspect(app.focus.defId, spec?.side ?? 'player', focusId);
   else renderInspect(null);
-  const errors = validateDeployment(scenario, app.deployment);
+  const errors = validateDeployment(scenario, app.deployment, app.loadout);
   el.commit.disabled = errors.length > 0;
   el.deployMsg.textContent =
-    errors[0] ?? `${app.deployment.length}/${scenario.deployCap} deployed. Drag units onto blue hexes; drag back to the tray to bench.`;
+    errors[0] ??
+    (app.trayTab === 'armory'
+      ? 'Drag gear onto a deployed unit. Tap a slot in the unit panel to remove it.'
+      : `${app.deployment.length}/${scenario.deployCap} deployed. Drag units onto blue hexes; drag back to the tray to bench.`);
+}
+
+function setTrayTab(tab) {
+  app.trayTab = tab;
+  el.roster.hidden = tab !== 'units';
+  el.armory.hidden = tab !== 'armory';
+  el.tabUnits.classList.toggle('active', tab === 'units');
+  el.tabArmory.classList.toggle('active', tab === 'armory');
+  refreshDeploy();
+}
+
+// Free equipment pool while there is no shop; each item can go on any number of units.
+function renderArmory() {
+  el.armory.innerHTML = '';
+  for (const [itemId, item] of Object.entries(EQUIPMENT_DEFS)) {
+    const card = document.createElement('div');
+    card.className = `card item${app.focus?.itemId === itemId ? ' selected' : ''}`;
+    card.style.setProperty('--unit-color', hex6(item.color));
+    card.innerHTML = `
+      <span class="item-badge">${item.short}</span>
+      <span class="card-text">
+        <span class="card-name">${item.name}</span>
+        <span class="card-role">${item.desc}</span>
+      </span>`;
+    card.addEventListener('pointerdown', (e) => beginPress(e, { itemId, source: 'armory' }));
+    el.armory.appendChild(card);
+  }
+}
+
+function equip(defId, itemId) {
+  const items = (app.loadout[defId] ??= []);
+  const item = EQUIPMENT_DEFS[itemId];
+  if (SIM_CONFIG.uniqueEquipmentPerUnit && items.includes(itemId)) return showToast(`${UNIT_DEFS[defId].name} already has ${item.name}`);
+  if (items.length >= SIM_CONFIG.equipmentSlots) return showToast(`${UNIT_DEFS[defId].name}: all ${SIM_CONFIG.equipmentSlots} slots are full`);
+  items.push(itemId);
+  showToast(`${item.name} -> ${UNIT_DEFS[defId].name}`);
+}
+
+function slotPips(defId) {
+  const items = app.loadout[defId] ?? [];
+  let html = '';
+  for (let i = 0; i < SIM_CONFIG.equipmentSlots; i++) {
+    html += items[i] ? `<i style="background:${item6(items[i])}" title="${EQUIPMENT_DEFS[items[i]].name}"></i>` : '<i></i>';
+  }
+  return `<span class="card-slots">${html}</span>`;
 }
 
 function renderRoster() {
@@ -154,7 +213,7 @@ function renderRoster() {
         <span class="card-name">${def.name}</span>
         <span class="card-pilot">${CAST[defId]?.pilot ?? ''}</span>
         <span class="card-role">${ROLE_LABELS[def.role]}</span>
-        <span class="card-state">${placed ? 'deployed' : 'bench'}</span>
+        <span class="card-state">${placed ? 'deployed' : 'bench'} ${slotPips(defId)}</span>
       </span>`;
     card.addEventListener('pointerdown', (e) => beginPress(e, { defId, unitId: unitIdOf(defId), source: 'card' }));
     el.roster.appendChild(card);
@@ -220,7 +279,7 @@ function beginPress(e, target) {
 }
 
 function overTray(x, y) {
-  const r = el.roster.getBoundingClientRect();
+  const r = (app.trayTab === 'armory' ? el.armory : el.roster).getBoundingClientRect();
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
@@ -235,6 +294,7 @@ function moveGhost(x, y) {
 
 window.addEventListener('pointermove', (e) => {
   if (!press || press.battle || e.pointerId !== press.pointerId) return;
+  if (press.itemId) return dragItem(e);
   if (!press.dragging) {
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
     press.dragging = true;
@@ -250,12 +310,43 @@ window.addEventListener('pointermove', (e) => {
   view.setHighlights(dropPreview(press.defId, hex, overTray(e.clientX, e.clientY)));
 });
 
+// Equipment drag: the selection ring marks the deployed player unit the item would land on.
+function dragItem(e) {
+  if (!press.dragging) {
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
+    press.dragging = true;
+    const item = EQUIPMENT_DEFS[press.itemId];
+    el.itemGhost.textContent = item.short;
+    el.itemGhost.style.setProperty('--unit-color', hex6(item.color));
+    el.itemGhost.hidden = false;
+    renderInspect(null);
+  }
+  el.itemGhost.style.transform = `translate(${e.clientX}px, ${e.clientY}px) translate(-50%, -50%)`;
+  const target = overCanvas(e.clientX, e.clientY) ? view.unitAtPointer(e.clientX, e.clientY) : null;
+  view.setSelected(target?.startsWith('p') ? target : null);
+}
+
 function endPress(e, cancelled) {
   if (!press || press.battle || e.pointerId !== press.pointerId) return;
   const p = press;
   press = null;
   el.ghost.hidden = true;
+  el.itemGhost.hidden = true;
   view.setGhost(null);
+  if (p.itemId) {
+    if (cancelled) return refreshDeploy();
+    if (!p.dragging) {
+      app.focus = app.focus?.itemId === p.itemId ? null : { itemId: p.itemId };
+      return refreshDeploy();
+    }
+    const target = overCanvas(e.clientX, e.clientY) ? view.unitAtPointer(e.clientX, e.clientY) : null;
+    if (target?.startsWith('p')) {
+      const defId = app.deployment[Number(target.slice(1)) - 1].defId;
+      equip(defId, p.itemId);
+      app.focus = { defId, unitId: target };
+    }
+    return refreshDeploy();
+  }
   if (p.dragging) {
     if (!cancelled) {
       const hex = overCanvas(e.clientX, e.clientY) ? view.pickHex(e.clientX, e.clientY) : null;
@@ -312,7 +403,7 @@ const sink = {
 };
 
 function commit() {
-  const errors = validateDeployment(scenario, app.deployment);
+  const errors = validateDeployment(scenario, app.deployment, app.loadout);
   if (errors.length) return showToast(errors[0]);
   const setup = draftSetup();
   const t0 = performance.now();
@@ -369,7 +460,22 @@ function renderInspect(defId, side = 'player', unitId = null) {
   }
   const def = app.timeline?.setup.defs[defId] ?? UNIT_DEFS[defId];
   const s = unitId ? view.board?.units.get(unitId) : null;
-  const st = def.stats;
+  const items = equipmentFor(defId, side, unitId);
+  const st = { ...equippedStats(def, items, EQUIPMENT_DEFS).stats, range: def.stats.range };
+  const fmt = (key) => {
+    const v = Math.round(st[key] * 10) / 10;
+    return v !== def.stats[key] ? `<span class="mod">${v}</span>` : `${v}`;
+  };
+  // Slots are removable only while deploying a player unit.
+  const editable = app.mode === 'deploy' && side === 'player';
+  let slots = '';
+  for (let i = 0; i < SIM_CONFIG.equipmentSlots; i++) {
+    const id = items[i];
+    const item = id && EQUIPMENT_DEFS[id];
+    slots += item
+      ? `<button class="slot" style="--unit-color:${hex6(item.color)}" title="${item.name}: ${item.desc}" ${editable ? `data-unequip="${i}"` : 'disabled'}>${item.short}</button>`
+      : '<span class="slot empty">-</span>';
+  }
   const a = def.attack;
   const config = { ...SIM_CONFIG, ...app.timeline?.setup.config };
   const shape = a?.shape?.type === 'line' ? `line ${a.shape.length}` : a?.shape?.type === 'circle' ? `circle r${a.shape.radius}` : 'single';
@@ -388,14 +494,44 @@ function renderInspect(defId, side = 'player', unitId = null) {
       </div>
     </div>
     <table>
-      <tr><td>HP</td><td>${s ? `${s.hp} / ${s.maxHp}` : st.hp}</td><td>ARM</td><td>${st.armor}</td></tr>
-      <tr><td>DMG</td><td>${st.damage}</td><td>RNG</td><td>${st.range}</td></tr>
+      <tr><td>HP</td><td>${s ? `${s.hp} / ${s.maxHp}` : fmt('hp')}</td><td>ARM</td><td>${fmt('armor')}</td></tr>
+      <tr><td>DMG</td><td>${fmt('damage')}</td><td>RNG</td><td>${st.range}</td></tr>
       <tr><td>MOVE</td><td>${moveTUPerHex(st.moveSpeed, config)} TU/hex</td><td>ATK</td><td>every ${attackIntervalTU(st.attackSpeed, config)} TU</td></tr>
     </table>
+    <div class="slots">${slots}</div>
     <div class="ins-line">Attack: ${attack}</div>
     <div class="ins-line">Targeting: ${tgt}</div>
     ${app.mode === 'battle' ? `<div class="ins-line">Target: ${target}</div>` : ''}`;
 }
+
+// Equipment shown for a unit: the battle setup's during playback, the loadout while deploying.
+function equipmentFor(defId, side, unitId) {
+  if (app.mode === 'battle') return app.timeline.setup.units.find((u) => u.id === unitId)?.equipment ?? [];
+  if (side === 'player') return app.loadout[defId] ?? [];
+  return draftSetup().units.find((u) => u.id === unitId)?.equipment ?? [];
+}
+
+function renderItemInspect(itemId) {
+  const item = EQUIPMENT_DEFS[itemId];
+  el.inspect.hidden = false;
+  el.inspect.innerHTML = `
+    <div class="ins-top">
+      <span class="item-badge big" style="--unit-color:${hex6(item.color)}">${item.short}</span>
+      <div>
+        <div class="ins-head"><b>${item.name}</b></div>
+        <div class="ins-role">Equipment</div>
+      </div>
+    </div>
+    <div class="ins-line">${item.desc}</div>
+    <div class="ins-line">Drag onto a deployed unit to equip.</div>`;
+}
+
+el.inspect.addEventListener('click', (e) => {
+  const slot = e.target.closest('[data-unequip]');
+  if (!slot || app.mode !== 'deploy' || !app.focus?.defId) return;
+  app.loadout[app.focus.defId]?.splice(Number(slot.dataset.unequip), 1);
+  refreshDeploy();
+});
 
 function renderLog(tu) {
   const log = app.result.log;
@@ -479,6 +615,8 @@ function updateHud() {
 // ---- Controls ----
 
 el.commit.addEventListener('click', commit);
+el.tabUnits.addEventListener('click', () => setTrayTab('units'));
+el.tabArmory.addEventListener('click', () => setTrayTab('armory'));
 $('btn-reset-formation').addEventListener('click', () => {
   app.deployment = scenario.defaultDeployment.map((d) => ({ ...d }));
   app.focus = null;

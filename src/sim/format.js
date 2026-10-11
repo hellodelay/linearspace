@@ -5,6 +5,7 @@ export function unitNames(log) {
   const setup = log[0].setup;
   const names = {};
   for (const u of setup.units) names[u.id] = `${u.id} ${setup.defs[u.defId].name}`;
+  for (const [id, item] of Object.entries(setup.equipment ?? {})) names[`item:${id}`] = item.name;
   return names;
 }
 
@@ -37,6 +38,10 @@ export function formatEvent(ev, names) {
       return `${n(ev.unit)} healed ${ev.amount}, HP ${ev.hpBefore} -> ${ev.hpAfter}`;
     case 'death':
       return `${n(ev.unit)} destroyed${ev.killer ? ` by ${n(ev.killer)}` : ''}`;
+    case 'equip_trigger':
+      return `${n(ev.unit)} ${names[`item:${ev.item}`] ?? ev.item} triggers on ${ev.on}${ev.expiresTU != null ? ` (until TU ${ev.expiresTU})` : ''}`;
+    case 'buff_end':
+      return `${n(ev.unit)} ${names[`item:${ev.item}`] ?? ev.item} wears off`;
     case 'timeout_begin':
       return 'Timeout: all units now take damage every TU';
     case 'battle_end':
