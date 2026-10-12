@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { simulate } from '../src/sim/simulate.js';
 import { DEFAULT_SCENARIO, buildBattleSetup, validateDeployment } from '../src/sim/battle.js';
 import { hexDistance, hexKey, offsetToAxial } from '../src/sim/hex.js';
+import { createGrid, gridFromSpec } from '../src/sim/grid.js';
 import { eventsOf, makeSetup } from './helpers.js';
 
 const defaultSetup = (seed) =>
@@ -141,4 +142,19 @@ test('range: a unit approaches until in range, then stops and attacks', () => {
   assert.equal(hexDistance(moves.at(-1).to, target), 3, 'stops at exactly max range');
   assert.ok(moves.every((m) => m.tu < attacks[0].tu), 'no movement after attacking begins');
   for (const m of moves.slice(0, -1)) assert.ok(hexDistance(m.to, target) > 3);
+});
+
+test('trimmed corners have only 2 neighbors and cannot be deployed on or entered', () => {
+  const { width, height } = DEFAULT_SCENARIO.grid;
+  const full = createGrid(width, height);
+  const trimmed = gridFromSpec(DEFAULT_SCENARIO.grid);
+  const holes = new Set(full.cells.filter((h) => !trimmed.has(h)).map(hexKey));
+  assert.deepEqual([...holes].sort(), [hexKey(offsetToAxial(0, 0)), hexKey(offsetToAxial(6, 7))].sort());
+  const bad = DEFAULT_SCENARIO.defaultDeployment.map((d, i) => (i === 0 ? { ...d, col: 6, row: 7 } : d));
+  assert.ok(validateDeployment(DEFAULT_SCENARIO, bad).length > 0);
+  for (let seed = 0; seed < 20; seed++) {
+    for (const m of simulate(defaultSetup(seed)).log.filter((e) => e.type === 'move_start')) {
+      assert.ok(!holes.has(hexKey(m.to)), `seed ${seed}: ${m.unit} moved into removed cell ${hexKey(m.to)}`);
+    }
+  }
 });

@@ -10,7 +10,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createGrid } from '../sim/grid.js';
+import { gridFromSpec } from '../sim/grid.js';
 import { hexKey } from '../sim/hex.js';
 import { createRng } from '../sim/rng.js';
 import { hexCorners, hexToWorld, worldToHex } from './layout.js';
@@ -73,8 +73,10 @@ export const CAMERA_MODES = Object.freeze({
   top: { yaw: 0, pitch: 90, elev: 0, lift: 0 },
   tilt: { yaw: 0, pitch: 55, elev: 0.15, lift: 1 },
   // Lower than true isometric (35.26 deg) so the board reads flatter.
-  // Negative yaw views from the south-west, so board rows run upward from left to right.
-  iso: { yaw: -45, pitch: 28, elev: 0.15, lift: 1 },
+  // Diagonal view from the south-east: the player side sits lower-left and advances up and to the
+  // right. Pitch sits below true isometric (35.26 deg) so the board reads flat; raising it makes the
+  // board taller and narrower on screen.
+  iso: { yaw: 45, pitch: 32, elev: 0.15, lift: 1 },
 });
 const CAMERA_TWEEN_MS = 600;
 const CAMERA_DISTANCE = 60;
@@ -152,7 +154,7 @@ export class BattleView {
     this.selectedId = null;
     this.size = { w: 1, h: 1 };
     this.fxRng = createRng(0xc0ffee);
-    this.records = { beams: [], charges: [], swings: [], flights: [], rings: [], numbers: [], telegraphs: [], shakes: [], buffs: [] };
+    this.records = { beams: [], charges: [], swings: [], flights: [], rings: [], numbers: [], telegraphs: [], shakes: [], buffs: [], ejects: [] };
     this.equipDefs = {};
 
     this.particleTexture = makeGlowTexture();
@@ -165,6 +167,9 @@ export class BattleView {
     this.bladePool = new Pool(() => makeBeam(), this.fxGroup);
     this.bladeOverPool = new Pool(() => makeBeam(), this.overlayScene);
     this.beamOverPool = new Pool(() => makeBeam(), this.overlayScene);
+    this.podPool = new Pool(() => makePod(), this.overlayScene);
+    this.thrusterPool = new Pool(() => makeThruster(), this.fxGroup);
+    this.exhaustPool = new Pool(() => makeTrail(EJECT_TRAIL_POINTS), this.fxGroup);
     this.buffPool = new Pool(() => makeHexRing(0.64, 0.72, 0xffffff, RO.unitFill), this.fxGroup);
     this.aimPool = new Pool(() => makeAimLine(), this.fxGroup);
     this.flightPool = new Pool(() => makeFlight(), this.fxGroup);
@@ -182,9 +187,10 @@ export class BattleView {
 
   // ---- Board ----
 
-  setGrid(width, height) {
+  // spec: a scenario or setup `grid` ({ width, height, removed?, trimCorners? }).
+  setGrid(spec) {
     this.boardGroup.clear();
-    this.grid = createGrid(width, height);
+    this.grid = gridFromSpec(spec);
     const cells = this.grid.cells;
     this.cellIndex = new Map(cells.map((c, i) => [hexKey(c), i]));
 
@@ -623,6 +629,8 @@ export class BattleView {
       const amp = HIT_SHAKE.min + (HIT_SHAKE.max - HIT_SHAKE.min) * clamp01(ev.amount / s.maxHp / HIT_SHAKE.fullAt);
       const left = cue.t - v.shake.t0 < HIT_SHAKE.life ? v.shake.amp * Math.exp(-HIT_SHAKE.decay * (cue.t - v.shake.t0)) : 0;
       if (amp >= left) v.shake = { t0: cue.t, amp, phase: ev.seq * 2.39 };
+      const strength = STATIC.min + (1 - STATIC.min) * clamp01(ev.amount / s.maxHp / STATIC.fullAt);
+      if (strength >= this.staticLevel(v, cue.t)) v.static = { t0: cue.t, strength };
     }
     const jitter = ((ev.seq * 0.618) % 1) - 0.5;
     this.records.numbers.push({
@@ -667,6 +675,17 @@ export class BattleView {
     v.deathT = cue.t;
     this.records.rings.push({ t0: cue.t, t1: cue.t + FX.ring * 1.4, at, r0: 0.3, r1: 2.6, color: v.color });
     if (this.selectedId === v.id) this.selectedId = null;
+    const cast = CAST[v.defId];
+    if (cast?.portrait && cast.ejects !== false) {
+      // Pods flee toward their own board edge (players sit at high rows, i.e. low world y).
+      const t0 = cue.t + EJECT.delay;
+      const sideways = ((cue.ev.seq * 0.618) % 1) - 0.5;
+      const dirY = v.side === 'player' ? -1 : 1;
+      const len = Math.hypot(sideways, 1);
+      this.records.ejects.push({ t0, at, spec: cast.portrait, dir: { x: sideways / len, y: dirY / len } });
+      this.records.numbers.push({ t0, x: at.x, y: at.y, text: 'EJECT!', cls: 'num eject', lift: 30 });
+      this.records.rings.push({ t0, t1: t0 + FX.muzzle, at, z: this.elev, r0: 0.15, r1: 0.7, color: 0xffffff });
+    }
     if (silent) return;
     this.particles.burst(at.x, at.y, v.color, 70, 6, 0.9);
     this.particles.burst(at.x, at.y, 0xffffff, 24, 3.5, 0.5);
@@ -686,6 +705,8 @@ export class BattleView {
     }
     this.renderCharges(pt);
     this.renderSwings(pt);
+    this.renderEjects(pt);
+    stripeTexture().offset.x = (pt * WARN_SCROLL) % 1;
     this.renderBeams(pt);
     this.renderFlights(pt);
     this.renderRings(pt);
@@ -703,6 +724,12 @@ export class BattleView {
     this.renderer.render(this.tokenScene, this.camera);
     this.renderer.render(this.overlayScene, this.camera);
     this.renderer.autoClear = true;
+  }
+
+  // Current static strength (0..1) on a unit's pilot feed.
+  staticLevel(v, pt) {
+    const k = (pt - v.static.t0) / STATIC.life;
+    return k < 0 || k >= 1 ? 0 : v.static.strength * Math.pow(1 - k, 1.5);
   }
 
   // Screen-plane offset of a unit's card from its damage jolt.
@@ -767,10 +794,30 @@ export class BattleView {
         v.frame.scale.setScalar(CARD_SCALE * scale * pulse);
         for (const m of c.mats) m.opacity = m.userData.base * CARD_OPACITY * opacity * ghost;
         c.pilotMat.map = s.alive && ratio <= HURT_RATIO ? v.faces.hurt : v.faces.neutral;
+        // Static: cycle noise frames (offset per unit) and flicker the pilot image darker.
+        const st = this.staticLevel(v, pt);
+        const frame = Math.floor(pt * STATIC.fps) + v.noiseSeed;
+        c.staticLayer.visible = st > 0.01;
+        c.staticLayer.material.map = staticFrames()[frame % STATIC.frames];
+        c.staticLayer.material.opacity = st * STATIC.opacity * opacity * ghost;
+        c.pilotMat.color.setScalar(1 - STATIC.dim * st * noise(frame));
+        c.pilot.position.x = st > 0.01 ? (noise(frame + 17) - 0.5) * 2 * STATIC.jitter * st : 0;
         c.flashMat.opacity = 0.55 * flash * opacity;
-        setBarFill(c.hpFill, c.hpX, ratio);
-        setBarFill(c.hpLag, c.hpX, v.lag);
-        setBarFill(c.resFill, c.resX, this.resourceRatio(v.id, pt));
+        const warning = s.alive && ratio <= WARN_RATIO;
+        // Cubing the dip keeps the text near full opacity most of the beat, with a quick dip low.
+        const beat = 1 - Math.pow(0.5 - 0.5 * Math.sin(pt * Math.PI * 2 * WARN_PULSE_RATE), 3);
+        const warnPulse = WARN_PULSE_LOW + (1 - WARN_PULSE_LOW) * beat;
+        for (const part of c.warn.band) {
+          part.visible = warning;
+          part.material.opacity = WARN_OPACITY * opacity * ghost;
+        }
+        c.warn.text.visible = warning;
+        c.warn.text.material.opacity = warnPulse * opacity * ghost;
+        const res = this.resourceRatio(v.id, pt);
+        setBarFill(c.hpLag, c.hpX, 1 - ratio);
+        setBarFill(c.hpFill, c.hpX, 1 - v.lag);
+        setFillEdge(c.hpEdge, c.hpX, s.alive ? 1 - ratio : 0);
+        setRing(c.ring, c.resX, res);
         // Slots flash when their item triggers and shimmer while its buff is active.
         for (const slot of c.slots) {
           if (!slot.itemId) continue;
@@ -970,6 +1017,63 @@ export class BattleView {
     this.bladeOverPool.end();
   }
 
+  // Escape pod position at flight fraction k (0..1): rockets up with growing speed while drifting home.
+  podPoint(e, k) {
+    return {
+      x: e.at.x + e.dir.x * EJECT.drift * k,
+      y: e.at.y + e.dir.y * EJECT.drift * k,
+      z: this.elev + 0.3 + EJECT.height * this.lift * Math.pow(k, 1.4),
+    };
+  }
+
+  // Pilot escape pods: portrait token with a white rim (over the cards), a flickering thruster and
+  // an exhaust trail. Top-down has no height, so the pod grows instead, as if rising toward the camera.
+  renderEjects(pt) {
+    this.records.ejects = this.records.ejects.filter((e) => pt < e.t0 + EJECT.life);
+    this.podPool.begin();
+    this.thrusterPool.begin();
+    this.exhaustPool.begin();
+    const color = new THREE.Color(EJECT.color);
+    for (const e of this.records.ejects) {
+      if (pt < e.t0) continue;
+      const k = (pt - e.t0) / EJECT.life;
+      const fade = k > 0.75 ? (1 - k) / 0.25 : 1;
+      const p = this.podPoint(e, k);
+      const pop = k < 0.06 ? 0.4 + (k / 0.06) * 0.8 : 1.2 - Math.min(0.2, (k - 0.06) * 2);
+      const grow = this.lift === 0 ? 1 + 1.5 * k : 1;
+
+      const pod = this.podPool.next();
+      pod.position.set(p.x, p.y, p.z);
+      // Wobble about the view axis.
+      pod.quaternion.copy(this.camera.quaternion).multiply(this.tmpQ.setFromAxisAngle(Z_AXIS, Math.sin(pt * 9 + e.t0) * 0.25));
+      pod.scale.setScalar(EJECT.size * pop * grow);
+      pod.disc.material.map = portraitTexture(e.spec, 'shout');
+      pod.disc.material.opacity = fade;
+      pod.rim.material.opacity = fade;
+
+      const thruster = this.thrusterPool.next();
+      thruster.position.set(p.x, p.y, p.z - EJECT.size * 1.1);
+      thruster.quaternion.copy(this.camera.quaternion);
+      thruster.scale.setScalar(EJECT.size * (0.6 + 0.25 * Math.sin(pt * 60 + e.t0 * 7)) * grow);
+      thruster.material.opacity = fade;
+
+      const trail = this.exhaustPool.next();
+      const pos = trail.geometry.attributes.position.array;
+      const col = trail.geometry.attributes.color.array;
+      for (let j = 0; j < EJECT_TRAIL_POINTS; j++) {
+        const tp = this.podPoint(e, Math.max(0, k - j * EJECT.trailStep));
+        const f = fade * (1 - j / (EJECT_TRAIL_POINTS - 1));
+        pos.set([tp.x, tp.y, tp.z - EJECT.size], j * 3);
+        col.set([color.r * f, color.g * f, color.b * f], j * 3);
+      }
+      trail.geometry.attributes.position.needsUpdate = true;
+      trail.geometry.attributes.color.needsUpdate = true;
+    }
+    this.podPool.end();
+    this.thrusterPool.end();
+    this.exhaustPool.end();
+  }
+
   // Point on a projectile path at curve parameter u. Shells lob in a sine arc. Missiles climb
   // almost vertically, cross at altitude and dive onto the target; top-down has no height, so
   // the fan spread carries the shape instead.
@@ -1145,6 +1249,22 @@ export class BattleView {
 const HP_W = 0.9;
 const TRAIL_POINTS = 10;
 const HURT_RATIO = 0.35;
+// At or below this HP ratio a DANGER band with pulsing text runs along the bottom of the unit portrait.
+// WARN_BAND is the band's height as a fraction of the portrait's.
+const WARN_RATIO = 0.3;
+const WARN_BAND = 0.36;
+// Stripe strip height as a fraction of the band's height, and scroll speed in texture widths per TU.
+const WARN_STRIPE = 0.22;
+const WARN_SCROLL = 0.8;
+// Steady opacity and color of the band behind the text.
+const WARN_OPACITY = 0.75;
+const WARN_COLOR = 0xffd400;
+// Text pulse: mostly full opacity with a quick dip to WARN_PULSE_LOW, WARN_PULSE_RATE times per TU.
+const WARN_PULSE_LOW = 0.4;
+const WARN_PULSE_RATE = 1;
+// Pilot ejection: an escape pod leaves `delay` TU after the death and flies for `life` TU,
+// rising `height` (scaled by the view's lift) and drifting `drift` toward its own side.
+const EJECT = { delay: 0.12, life: 1.6, height: 6, drift: 2.2, size: 0.24, trailStep: 0.03, color: 0xffb040 };
 const stemGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 1)]);
 const portraitTextures = new Map();
 
@@ -1163,18 +1283,38 @@ function unitIconTexture(defId, visual, side) {
 // ---- Card token ----
 // A slanted card split into vertical slices: HP bar | resource bar | unit badge | pilot portrait,
 // with an equipment strip below it, sliced per slot. Sizes are world units before billboarding.
-// The equipment strip is 20% of the main card's height; skew keeps the edge slant constant as height changes.
-const CARD = { w: 1.1, h: 0.825, eq: 0.165, gap: 0.045, skew: 0.10125, sliceGap: 0.02, border: 0.012 };
+const CARD_SLICES = { unit: [0, 2 / 3], pilot: [2 / 3, 1] };
+// Card size: the main card's height is derived so the unit image is a rhombus (its top edge and
+// slanted side are the same length). `slant` is the sideways lean per unit of height; the equipment
+// strip is 20% of the main card's height.
+const CARD = (() => {
+  const w = 1.1;
+  const slant = 0.0978;
+  const gap = 0.045;
+  const sliceGap = 0.02;
+  const unitWidth = (CARD_SLICES.unit[1] - CARD_SLICES.unit[0]) * w - sliceGap / 2;
+  const h = unitWidth / Math.sqrt(1 + slant * slant);
+  const eq = 0.2 * h;
+  return { w, h, eq, gap, skew: slant * (h + gap + eq), sliceGap, border: 0.012 };
+})();
 // Overall card size multiplier, applied to the card, its depth slab and its outline together.
 const CARD_SCALE = 0.8;
 // Whole-card opacity (25% transparent).
 const CARD_OPACITY = 0.75;
-const CARD_SLICES = { hp: [0, 0.05], res: [0.05, 0.1], unit: [0.1, 0.7], pilot: [0.7, 1] };
+// Damage taken rises from the bottom of the unit image as a translucent red overlay, with a brighter
+// line at its top. Opacities are before the card's own opacity.
+const FILL = { opacity: 0.3, lagOpacity: 0.225, edge: 0.018 };
+// The resource is a border around the pilot image that fills clockwise from the top-left corner.
+const RING = { width: 0.03, trackOpacity: 0.35 };
+// Video-feed static on the pilot image after a hit: strength scales with damage / max HP (full at
+// `fullAt`), decays over `life` TU, and noise frames change `fps` times per TU.
+// `jitter` is the pilot image's max sideways jump in world units at full static.
+const STATIC = { min: 0.6, fullAt: 0.08, life: 0.8, opacity: 1, dim: 0.7, jitter: 0.06, fps: 30, frames: 4 };
 const CARD_T = CARD.h + CARD.gap + CARD.eq;
 const CARD_K = CARD.skew / CARD_T;
 const CARD_MAIN = [-CARD_T / 2 + CARD.eq + CARD.gap, CARD_T / 2];
 const CARD_EQ = [-CARD_T / 2, -CARD_T / 2 + CARD.eq];
-const CARD_COLORS = { plate: 0x05080f, hpBg: 0x3a0a10, hp: 0xff3344, hpLag: 0xffd0d0, resBg: 0x0a1a3a, res: 0x3c8cff, emptySlot: 0x1a2230, border: 0xcfe8f5 };
+const CARD_COLORS = { plate: 0x05080f, hp: 0xff2a3a, hpEdge: 0xff8a94, hpLag: 0xffd0d0, res: 0x3c9cff, resTrack: 0x0a1a3a, emptySlot: 0x1a2230, border: 0xcfe8f5 };
 
 function sliceX(f0, f1) {
   const x0 = -CARD.w / 2 + f0 * CARD.w + (f0 > 0 ? CARD.sliceGap / 2 : 0);
@@ -1211,10 +1351,44 @@ function slantQuad(x0, x1, y0, y1) {
   return geo;
 }
 
-// Bars fill from the bottom; the fill quad keeps the card's slant at every height.
+// Fills rise from the bottom; the fill quad keeps the card's slant at every height.
 function setBarFill(mesh, xr, ratio) {
   const [y0, y1] = CARD_MAIN;
   setSlantQuad(mesh.geometry, xr[0], xr[1], y0, y0 + (y1 - y0) * clamp01(ratio));
+}
+
+// Ring segments in clockwise order from the top-left corner of a slice. Each maps (slice bounds,
+// filled length along the segment) to the strip's unsheared x/y extents.
+const RING_ORDER = [
+  { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x0, b.x0 + a, b.y1 - t, b.y1] },
+  { len: (b) => b.y1 - b.y0, quad: (b, a, t) => [b.x1 - t, b.x1, b.y1 - a, b.y1] },
+  { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x1 - a, b.x1, b.y0, b.y0 + t] },
+  { len: (b) => b.y1 - b.y0, quad: (b, a, t) => [b.x0, b.x0 + t, b.y0, b.y0 + a] },
+];
+
+// Fills the ring's segments in order until `ratio` of the slice's perimeter is covered.
+function setRing(segments, xr, ratio) {
+  const [y0, y1] = CARD_MAIN;
+  const b = { x0: xr[0], x1: xr[1], y0, y1 };
+  const total = RING_ORDER.reduce((sum, seg) => sum + seg.len(b), 0);
+  let left = clamp01(ratio) * total;
+  RING_ORDER.forEach((seg, i) => {
+    const a = Math.min(left, seg.len(b));
+    left -= a;
+    segments[i].visible = a > 1e-4;
+    if (segments[i].visible) {
+      const [qx0, qx1, qy0, qy1] = seg.quad(b, a, RING.width);
+      setSlantQuad(segments[i].geometry, qx0, qx1, qy0, qy1);
+    }
+  });
+}
+
+// Thin bright line at the fill level; hidden when the fill is empty.
+function setFillEdge(mesh, xr, ratio) {
+  const [y0, y1] = CARD_MAIN;
+  const top = y0 + (y1 - y0) * clamp01(ratio);
+  mesh.visible = ratio > 0;
+  setSlantQuad(mesh.geometry, xr[0], xr[1], Math.max(y0, top - FILL.edge), top);
 }
 
 function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
@@ -1232,17 +1406,12 @@ function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
     return mesh;
   };
   const [y0, y1] = CARD_MAIN;
-  const hpX = sliceX(...CARD_SLICES.hp);
-  const resX = sliceX(...CARD_SLICES.res);
+  const hpX = sliceX(...CARD_SLICES.unit);
+  const resX = sliceX(...CARD_SLICES.pilot);
   const pad = 0.03;
   const depthColor = new THREE.Color(visual.color).multiplyScalar(0.55);
   layer(makeCardDepth(-CARD.w / 2 - pad, CARD.w / 2 + pad, CARD_EQ[0] - pad, y1 + pad), { color: depthColor, vertexColors: true, side: THREE.DoubleSide }, -0.001);
   layer(slantQuad(-CARD.w / 2 - pad, CARD.w / 2 + pad, CARD_EQ[0] - pad, y1 + pad), { color: CARD_COLORS.plate }, 0, 0.85);
-  layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpBg }, 0.001);
-  const hpLag = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpLag }, 0.002);
-  const hpFill = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hp }, 0.003);
-  layer(slantQuad(...resX, y0, y1), { color: CARD_COLORS.resBg }, 0.001);
-  const resFill = layer(slantQuad(...resX, y0, y1), { color: CARD_COLORS.res }, 0.003);
   // Thin borders: slightly larger quads behind the unit and pilot portraits.
   const b = CARD.border;
   for (const [x0, x1] of [sliceX(...CARD_SLICES.unit), sliceX(...CARD_SLICES.pilot)]) {
@@ -1250,6 +1419,39 @@ function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
   }
   layer(slantQuad(...sliceX(...CARD_SLICES.unit), y0, y1), { map: unitIconTexture(spec.defId, visual, spec.side) }, 0.001);
   const pilot = layer(slantQuad(...sliceX(...CARD_SLICES.pilot), y0, y1), { map: pilotTexture }, 0.001);
+  // Damage over the unit image: the pale layer reaches the current damage, and the red layer catches
+  // up to it as the lag drains, so fresh damage shows pale at the top.
+  const hpLag = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpLag }, 0.0012, FILL.lagOpacity);
+  const hpFill = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hp }, 0.0014, FILL.opacity);
+  const hpEdge = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpEdge }, 0.0016);
+  // Resource ring: a dim full track with the bright clockwise fill over it.
+  const ringSegment = (color, z, base) => layer(slantQuad(...resX, y0, y1), { color }, z, base);
+  const track = RING_ORDER.map(() => ringSegment(CARD_COLORS.resTrack, 0.0014, RING.trackOpacity));
+  const ring = RING_ORDER.map(() => ringSegment(CARD_COLORS.res, 0.0016, 1));
+  setRing(track, resX, 1);
+  // Static noise over the pilot image, under the ring. Opacity is set directly, outside the card's own.
+  const staticLayer = layer(slantQuad(...resX, y0, y1), { map: staticFrames()[0] }, 0.0013, 0);
+  mats.splice(mats.indexOf(staticLayer.material), 1);
+  staticLayer.visible = false;
+  // Low-HP DANGER band along the bottom of the unit portrait. Its opacity is set directly, outside the card's own.
+  const half = ((y1 - y0) * WARN_BAND) / 2;
+  const mid = y0 + half;
+  const unitX = sliceX(...CARD_SLICES.unit);
+  const edge = half * 2 * WARN_STRIPE;
+  const warn = {
+    // Steady yellow band with scrolling stripe strips along its top and bottom edges.
+    band: [
+      layer(boxQuad(...unitX, mid - half, mid + half), { color: WARN_COLOR }, 0.002, WARN_OPACITY),
+      layer(boxQuad(...unitX, mid + half - edge, mid + half), { map: stripeTexture() }, 0.0025, WARN_OPACITY),
+      layer(boxQuad(...unitX, mid - half, mid - half + edge), { map: stripeTexture() }, 0.0025, WARN_OPACITY),
+    ],
+    // DANGER lettering on its own layer so only the text pulses.
+    text: layer(boxQuad(...unitX, mid - half, mid + half), { map: dangerTexture() }, 0.003, WARN_PULSE_LOW),
+  };
+  for (const part of [...warn.band, warn.text]) {
+    mats.splice(mats.indexOf(part.material), 1);
+    part.visible = false;
+  }
 
   const slots = [];
   const count = SIM_CONFIG.equipmentSlots;
@@ -1261,7 +1463,7 @@ function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
   }
 
   const flash = layer(slantQuad(-CARD.w / 2, CARD.w / 2, y0, y1), { color: 0xffffff }, 0.004, 0);
-  return { group, mats, hpFill, hpLag, resFill, hpX, resX, pilotMat: pilot.material, flashMat: flash.material, slots };
+  return { group, mats, hpFill, hpLag, hpEdge, ring, hpX, resX, pilot, pilotMat: pilot.material, flashMat: flash.material, slots, warn, staticLayer };
 }
 
 // Faux thickness behind the card: the outline shifted down-right plus side faces joining each edge to
@@ -1419,6 +1621,7 @@ function makeUnit(spec, def, equipDefs = {}) {
 
   return {
     id: spec.id,
+    defId: spec.defId,
     side: spec.side,
     def,
     color: visual.color,
@@ -1442,6 +1645,8 @@ function makeUnit(spec, def, equipDefs = {}) {
     move: null,
     flashT: -1e9,
     shake: { t0: -1e9, amp: 0, phase: 0 },
+    static: { t0: -1e9, strength: 0 },
+    noiseSeed: [...spec.id].reduce((h, ch) => h * 31 + ch.charCodeAt(0), 7) % 997,
     deathT: null,
   };
 }
@@ -1563,6 +1768,129 @@ function makeAimLine() {
   const mesh = new THREE.Mesh(unitPlane, additive(0xffffff, 0.3));
   mesh.renderOrder = RO.target;
   return mesh;
+}
+
+// Sheared quad whose uvs stretch across its bounding box, so a wide label texture fills it upright.
+function boxQuad(x0, x1, y0, y1) {
+  const geo = slantQuad(x0, x1, y0, y1);
+  const p = geo.attributes.position.array;
+  const xs = [p[0], p[3], p[6], p[9]];
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const uv = geo.attributes.uv.array;
+  for (let i = 0; i < 4; i++) {
+    uv[i * 2] = (p[i * 3] - minX) / (maxX - minX);
+    uv[i * 2 + 1] = (p[i * 3 + 1] - y0) / (y1 - y0);
+  }
+  return geo;
+}
+
+// Repeating black diagonal hazard stripes on transparent, scrolled sideways along the DANGER band edges.
+let stripes = null;
+function stripeTexture() {
+  if (stripes) return stripes;
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 16;
+  const g = c.getContext('2d');
+  g.fillStyle = '#111111';
+  for (let x = -16; x < 80; x += 16) {
+    g.beginPath();
+    g.moveTo(x, 16);
+    g.lineTo(x + 8, 16);
+    g.lineTo(x + 24, 0);
+    g.lineTo(x + 16, 0);
+    g.closePath();
+    g.fill();
+  }
+  stripes = new THREE.CanvasTexture(c);
+  stripes.colorSpace = THREE.SRGBColorSpace;
+  stripes.wrapS = THREE.RepeatWrapping;
+  // Tiles across the band; fewer repeats on taller strips keep the stripe angle.
+  stripes.repeat.set(2.5, 1);
+  return stripes;
+}
+
+// DANGER lettering on transparent; the yellow band and edge stripes are separate layers.
+let danger = null;
+function dangerTexture() {
+  if (danger) return danger;
+  const c = document.createElement('canvas');
+  // Roughly the band's on-card aspect ratio, so the lettering is not stretched.
+  c.width = 256;
+  c.height = 112;
+  const g = c.getContext('2d');
+  g.fillStyle = '#111111';
+  g.font = '900 34px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('D A N G E R', 128, 58);
+  danger = new THREE.CanvasTexture(c);
+  danger.colorSpace = THREE.SRGBColorSpace;
+  return danger;
+}
+
+const EJECT_TRAIL_POINTS = 12;
+
+// Pre-generated video static frames: grey noise with bright scan-tear lines and dark dropout rows.
+let staticTextures = null;
+function staticFrames() {
+  if (staticTextures) return staticTextures;
+  const rng = createRng(1337);
+  staticTextures = [];
+  for (let f = 0; f < STATIC.frames; f++) {
+    const size = 96;
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    const img = g.createImageData(size, size);
+    const tears = new Set(Array.from({ length: 6 }, () => rng.int(size)));
+    const drops = new Set(Array.from({ length: 4 }, () => rng.int(size)));
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const v = tears.has(y) ? 230 + rng.int(25) : drops.has(y) ? 10 : rng.int(256);
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = tears.has(y) || drops.has(y) ? 255 : 120 + rng.int(135);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    staticTextures.push(tex);
+  }
+  return staticTextures;
+}
+
+function makePod() {
+  const group = new THREE.Group();
+  const rim = new THREE.Mesh(orbGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthTest: false }));
+  rim.scale.setScalar(1.15);
+  const disc = new THREE.Mesh(orbGeo, new THREE.MeshBasicMaterial({ transparent: true, depthTest: false }));
+  disc.position.z = 0.001;
+  group.add(rim, disc);
+  Object.assign(group, { rim, disc });
+  return group;
+}
+
+function makeThruster() {
+  const mesh = new THREE.Mesh(orbGeo, additive(EJECT.color));
+  mesh.renderOrder = RO.flight;
+  return mesh;
+}
+
+function makeTrail(points) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points * 3), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(points * 3), 3));
+  const line = new THREE.Line(
+    geo,
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthTest: false }),
+  );
+  line.frustumCulled = false;
+  line.renderOrder = RO.flight;
+  return line;
 }
 
 function makeTargetLines(max) {

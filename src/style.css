@@ -524,3 +524,9 @@ button:disabled {
   font-size: 10px;
   letter-spacing: 0.08em;
 }
+
+.num.eject {
+  color: #ffb040;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+}

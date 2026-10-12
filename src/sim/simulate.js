@@ -18,7 +18,7 @@
 
 import { createRng } from './rng.js';
 import { DIRECTIONS, hexDisk, hexDistance, hexKey } from './hex.js';
-import { createGrid } from './grid.js';
+import { gridFromSpec } from './grid.js';
 import { attackHexes } from './geometry.js';
 import { SIM_CONFIG, attackIntervalTU, moveTUPerHex } from './config.js';
 import { applyMods } from './equipment.js';
@@ -65,7 +65,7 @@ export function equippedStats(def, equipmentIds = [], equipmentDefs = {}) {
 }
 
 function createContext(setup, config) {
-  const grid = createGrid(setup.grid.width, setup.grid.height);
+  const grid = gridFromSpec(setup.grid);
   const sideIndex = { player: 0, enemy: 0 };
   const units = setup.units.map((spec) => {
     const def = setup.defs[spec.defId];

@@ -58,7 +58,7 @@ const el = {
 };
 
 const view = new BattleView(el.canvas, el.fx);
-view.setGrid(scenario.grid.width, scenario.grid.height);
+view.setGrid(scenario.grid);
 
 const app = {
   mode: 'deploy',

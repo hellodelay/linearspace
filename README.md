@@ -59,10 +59,12 @@ the cue-driven board matches the sim snapshot at every TU boundary, including af
   canvas, with mood variants (neutral, happy, angry, hurt, shout).
 - By default, units render as slanted cards (the header toggle switches back to geometric shapes). This
   departs from GDD 36, which keeps units geometric and puts portraits next to pilot chatter.
-  - The card's slices, left to right: HP bar, resource bar, unit badge, pilot portrait.
+  - The card has two slices, the unit badge and the pilot portrait.
+  - Damage taken is a translucent red fill rising over the unit badge; there's no overlay at full HP.
+  - The resource is a blue border around the pilot portrait that fills clockwise from the top center.
   - An equipment strip below the card is split into one slice per slot.
-  - The resource bar is a placeholder: it shows attack charge, filling between shots, until the sim
-    has a resource.
+  - The resource is a placeholder: it shows attack charge, filling between shots, until the sim has a
+    resource.
   - [unitIcons.js](src/present/unitIcons.js) draws placeholder unit badges from each unit's shape.
 - [dialogue.js](src/present/dialogue.js) derives chatter from the timeline: opening calls, first
   attack, kills, low HP, heals, deaths, ally down, overtime and victory. One line at a time; higher

@@ -87,6 +87,8 @@ export const CAST = Object.freeze({
 
   // ---- Enemy faction (placeholder) ----
   drone: {
+    // Unmanned: no pilot to eject.
+    ejects: false,
     pilot: 'Swarm Node',
     callsign: 'NODE',
     portrait: { id: 'node', helmet: true, suit: '#3a1020', accent: '#ff4fa3', bg: '#4a0f2a' },

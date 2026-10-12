@@ -2,11 +2,13 @@ import { UNIT_DEFS } from './data.js';
 import { EQUIPMENT_DEFS } from './equipment.js';
 import { SIM_CONFIG } from './config.js';
 import { offsetToAxial } from './hex.js';
+import { gridFromSpec } from './grid.js';
 
 // Placeholder encounter. Offsets are (col, row); row 0 is the enemy edge.
 export const DEFAULT_SCENARIO = Object.freeze({
   id: 'proto-skirmish',
-  grid: { width: 7, height: 8 },
+  // trimCorners drops the two sharp corner cells, the ones with only 2 neighbors.
+  grid: { width: 7, height: 8, trimCorners: true },
   // ASSUMPTION (GDD 8.3, TBD): prototype deployment cap.
   deployCap: 5,
   deployRows: [4, 5, 6, 7],
@@ -39,6 +41,7 @@ export const DEFAULT_SCENARIO = Object.freeze({
 // Problems with a player deployment and its loadout ({ defId: [equipmentId] }); empty when valid.
 export function validateDeployment(scenario, deployment, loadout = {}, equipmentDefs = EQUIPMENT_DEFS) {
   const errors = [];
+  const grid = gridFromSpec(scenario.grid);
   if (deployment.length === 0) errors.push('Deploy at least one unit.');
   if (deployment.length > scenario.deployCap) errors.push(`At most ${scenario.deployCap} units may deploy.`);
   const used = new Set(scenario.enemies.map((e) => `${e.col},${e.row}`));
@@ -47,7 +50,7 @@ export function validateDeployment(scenario, deployment, loadout = {}, equipment
     const k = `${d.col},${d.row}`;
     if (!scenario.roster.includes(d.defId)) errors.push(`${d.defId} is not in the roster.`);
     if (seenDefs.has(d.defId)) errors.push(`${d.defId} is deployed twice.`);
-    if (!scenario.deployRows.includes(d.row) || d.col < 0 || d.col >= scenario.grid.width) {
+    if (!scenario.deployRows.includes(d.row) || !grid.has(offsetToAxial(d.col, d.row))) {
       errors.push(`${d.defId} is outside the deployment zone.`);
     }
     if (used.has(k)) errors.push(`Hex ${k} is occupied twice.`);
@@ -85,5 +88,6 @@ export function buildBattleSetup({ scenario, deployment, seed, loadout = {}, def
     usedDefs[u.defId] = structuredClone(defs[u.defId]);
     for (const id of u.equipment) usedEquipment[id] = structuredClone(equipmentDefs[id]);
   }
-  return { seed: seed >>> 0, scenarioId: scenario.id, grid: { ...scenario.grid }, units, defs: usedDefs, equipment: usedEquipment };
+  const grid = { ...scenario.grid, removed: (scenario.grid.removed ?? []).map((c) => [...c]) };
+  return { seed: seed >>> 0, scenarioId: scenario.id, grid, units, defs: usedDefs, equipment: usedEquipment };
 }
