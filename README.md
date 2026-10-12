@@ -61,7 +61,8 @@ the cue-driven board matches the sim snapshot at every TU boundary, including af
   departs from GDD 36, which keeps units geometric and puts portraits next to pilot chatter.
   - The card has two slices, the unit badge and the pilot portrait.
   - Damage taken is a translucent red fill rising over the unit badge; there's no overlay at full HP.
-  - The resource is a blue border around the pilot portrait that fills clockwise from the top center.
+  - The resource is a blue border around the equipment strip. It fills from the middle of the left
+    end, across the top and bottom at once, and meets in the middle of the right end when full.
   - An equipment strip below the card is split into one slice per slot.
   - The resource is a placeholder: it shows attack charge, filling between shots, until the sim has a
     resource.

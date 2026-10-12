@@ -817,7 +817,16 @@ export class BattleView {
         setBarFill(c.hpLag, c.hpX, 1 - ratio);
         setBarFill(c.hpFill, c.hpX, 1 - v.lag);
         setFillEdge(c.hpEdge, c.hpX, s.alive ? 1 - ratio : 0);
-        setRing(c.ring, c.resX, res);
+        const [upperTip, lowerTip] = setRing(c.ring, c.ringX, res, CARD_EQ);
+        setSparkle(c.resSpark, upperTip, pt, 0);
+        setSparkle(c.resSpark2, lowerTip, pt, 0.9);
+        // Damage sparkle sweeps left to right along the damage line, fading in and out at the ends.
+        const damage = s.alive ? 1 - ratio : 0;
+        const dy = CARD_MAIN[0] + (CARD_MAIN[1] - CARD_MAIN[0]) * damage;
+        const sweep = (pt * SPARKLE.sweepRate + v.noiseSeed * 0.13) % 1;
+        const sx = c.hpX[0] + (c.hpX[1] - c.hpX[0]) * sweep;
+        setSparkle(c.hpSpark, damage > 0 ? { x: sx + CARD_K * dy, y: dy } : null, pt, 1.7);
+        c.hpSpark.scale.multiplyScalar(Math.sin(Math.PI * sweep));
         // Slots flash when their item triggers and shimmer while its buff is active.
         for (const slot of c.slots) {
           if (!slot.itemId) continue;
@@ -1304,8 +1313,13 @@ const CARD_OPACITY = 0.75;
 // Damage taken rises from the bottom of the unit image as a translucent red overlay, with a brighter
 // line at its top. Opacities are before the card's own opacity.
 const FILL = { opacity: 0.3, lagOpacity: 0.225, edge: 0.018 };
-// The resource is a border around the pilot image that fills clockwise from the top-left corner.
+// The resource is a border around the equipment strip. It fills from the middle of the left end in two
+// mirrored branches, across the top and the bottom, meeting in the middle of the right end when full.
 const RING = { width: 0.03, trackOpacity: 0.35 };
+// Sparkles on the resource ring's tip and sweeping along the damage line. Spin is radians per TU,
+// twinkle is the size pulse rate.
+// sweepRate is how many times per TU the damage sparkle crosses the damage line.
+const SPARKLE = { size: 0.13, spin: 2, twinkle: 14, sweepRate: 0.9, ring: 0x48a8ff, damage: 0xffc0c8 };
 // Video-feed static on the pilot image after a hit: strength scales with damage / max HP (full at
 // `fullAt`), decays over `life` TU, and noise frames change `fps` times per TU.
 // `jitter` is the pilot image's max sideways jump in world units at full static.
@@ -1359,28 +1373,57 @@ function setBarFill(mesh, xr, ratio) {
 
 // Ring segments in clockwise order from the top-left corner of a slice. Each maps (slice bounds,
 // filled length along the segment) to the strip's unsheared x/y extents.
-const RING_ORDER = [
-  { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x0, b.x0 + a, b.y1 - t, b.y1] },
-  { len: (b) => b.y1 - b.y0, quad: (b, a, t) => [b.x1 - t, b.x1, b.y1 - a, b.y1] },
-  { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x1 - a, b.x1, b.y0, b.y0 + t] },
-  { len: (b) => b.y1 - b.y0, quad: (b, a, t) => [b.x0, b.x0 + t, b.y0, b.y0 + a] },
+// Two mirrored branches, each a list of segments in fill order. `quad` maps (bounds, filled length,
+// thickness) to the strip's unsheared x/y extents; `tip` is the center of its moving end.
+const RING_BRANCHES = [
+  // Upper: from the left end's middle up, across the top, down the right end to its middle.
+  [
+    { len: (b) => b.y1 - b.ym, quad: (b, a, t) => [b.x0, b.x0 + t, b.ym, b.ym + a], tip: (b, a, t) => [b.x0 + t / 2, b.ym + a] },
+    { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x0, b.x0 + a, b.y1 - t, b.y1], tip: (b, a, t) => [b.x0 + a, b.y1 - t / 2] },
+    { len: (b) => b.y1 - b.ym, quad: (b, a, t) => [b.x1 - t, b.x1, b.y1 - a, b.y1], tip: (b, a, t) => [b.x1 - t / 2, b.y1 - a] },
+  ],
+  // Lower: the mirror image along the bottom.
+  [
+    { len: (b) => b.ym - b.y0, quad: (b, a, t) => [b.x0, b.x0 + t, b.ym - a, b.ym], tip: (b, a, t) => [b.x0 + t / 2, b.ym - a] },
+    { len: (b) => b.x1 - b.x0, quad: (b, a, t) => [b.x0, b.x0 + a, b.y0, b.y0 + t], tip: (b, a, t) => [b.x0 + a, b.y0 + t / 2] },
+    { len: (b) => b.ym - b.y0, quad: (b, a, t) => [b.x1 - t, b.x1, b.y0, b.y0 + a], tip: (b, a, t) => [b.x1 - t / 2, b.y0 + a] },
+  ],
 ];
+const RING_SEGMENT_COUNT = RING_BRANCHES.reduce((n, branch) => n + branch.length, 0);
 
-// Fills the ring's segments in order until `ratio` of the slice's perimeter is covered.
-function setRing(segments, xr, ratio) {
-  const [y0, y1] = CARD_MAIN;
-  const b = { x0: xr[0], x1: xr[1], y0, y1 };
-  const total = RING_ORDER.reduce((sum, seg) => sum + seg.len(b), 0);
-  let left = clamp01(ratio) * total;
-  RING_ORDER.forEach((seg, i) => {
-    const a = Math.min(left, seg.len(b));
-    left -= a;
-    segments[i].visible = a > 1e-4;
-    if (segments[i].visible) {
+// Fills both branches to `ratio` of their length. `segments` is flat, upper branch first. Returns the
+// sheared tip position of each branch, or null for a branch with nothing filled.
+function setRing(segments, xr, ratio, yr) {
+  const [y0, y1] = yr;
+  const b = { x0: xr[0], x1: xr[1], y0, y1, ym: (y0 + y1) / 2 };
+  let i = 0;
+  return RING_BRANCHES.map((branch) => {
+    const total = branch.reduce((sum, seg) => sum + seg.len(b), 0);
+    let left = clamp01(ratio) * total;
+    let tip = null;
+    for (const seg of branch) {
+      const mesh = segments[i++];
+      const a = Math.min(left, seg.len(b));
+      left -= a;
+      mesh.visible = a > 1e-4;
+      if (!mesh.visible) continue;
       const [qx0, qx1, qy0, qy1] = seg.quad(b, a, RING.width);
-      setSlantQuad(segments[i].geometry, qx0, qx1, qy0, qy1);
+      setSlantQuad(mesh.geometry, qx0, qx1, qy0, qy1);
+      const [tx, ty] = seg.tip(b, a, RING.width);
+      tip = { x: tx + CARD_K * ty, y: ty };
     }
+    return tip;
   });
+}
+
+// Twinkling sparkle at a card-local point; hidden when `at` is null.
+function setSparkle(mesh, at, pt, phase) {
+  mesh.visible = !!at;
+  if (!at) return;
+  mesh.position.x = at.x;
+  mesh.position.y = at.y;
+  mesh.rotation.z = pt * SPARKLE.spin + phase;
+  mesh.scale.setScalar(0.7 + 0.3 * Math.sin(pt * SPARKLE.twinkle + phase));
 }
 
 // Thin bright line at the fill level; hidden when the fill is empty.
@@ -1424,11 +1467,17 @@ function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
   const hpLag = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpLag }, 0.0012, FILL.lagOpacity);
   const hpFill = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hp }, 0.0014, FILL.opacity);
   const hpEdge = layer(slantQuad(...hpX, y0, y1), { color: CARD_COLORS.hpEdge }, 0.0016);
-  // Resource ring: a dim full track with the bright clockwise fill over it.
-  const ringSegment = (color, z, base) => layer(slantQuad(...resX, y0, y1), { color }, z, base);
-  const track = RING_ORDER.map(() => ringSegment(CARD_COLORS.resTrack, 0.0014, RING.trackOpacity));
-  const ring = RING_ORDER.map(() => ringSegment(CARD_COLORS.res, 0.0016, 1));
-  setRing(track, resX, 1);
+  // Resource ring around the equipment strip: a dim full track with the bright clockwise fill over it.
+  const ringX = [-CARD.w / 2, CARD.w / 2];
+  const ringSegment = (color, z, base) => layer(slantQuad(...ringX, ...CARD_EQ), { color }, z, base);
+  const track = Array.from({ length: RING_SEGMENT_COUNT }, () => ringSegment(CARD_COLORS.resTrack, 0.0014, RING.trackOpacity));
+  const ring = Array.from({ length: RING_SEGMENT_COUNT }, () => ringSegment(CARD_COLORS.res, 0.0016, 1));
+  setRing(track, ringX, 1, CARD_EQ);
+  const sparkle = (color) =>
+    layer(new THREE.PlaneGeometry(SPARKLE.size, SPARKLE.size), { map: sparkleTexture(), color, blending: THREE.AdditiveBlending, depthWrite: false }, 0.0019);
+  const resSpark = sparkle(SPARKLE.ring);
+  const resSpark2 = sparkle(SPARKLE.ring);
+  const hpSpark = sparkle(SPARKLE.damage);
   // Static noise over the pilot image, under the ring. Opacity is set directly, outside the card's own.
   const staticLayer = layer(slantQuad(...resX, y0, y1), { map: staticFrames()[0] }, 0.0013, 0);
   mats.splice(mats.indexOf(staticLayer.material), 1);
@@ -1463,7 +1512,7 @@ function makeCard(spec, visual, pilotTexture, equipment, equipDefs) {
   }
 
   const flash = layer(slantQuad(-CARD.w / 2, CARD.w / 2, y0, y1), { color: 0xffffff }, 0.004, 0);
-  return { group, mats, hpFill, hpLag, hpEdge, ring, hpX, resX, pilot, pilotMat: pilot.material, flashMat: flash.material, slots, warn, staticLayer };
+  return { group, mats, hpFill, hpLag, hpEdge, ring, ringX, hpX, resX, pilot, pilotMat: pilot.material, flashMat: flash.material, slots, warn, staticLayer, resSpark, resSpark2, hpSpark };
 }
 
 // Faux thickness behind the card: the outline shifted down-right plus side faces joining each edge to
@@ -1831,6 +1880,32 @@ function dangerTexture() {
 }
 
 const EJECT_TRAIL_POINTS = 12;
+
+// Four-point star with a soft glow, drawn white so materials can tint it.
+let sparkleTex = null;
+function sparkleTexture() {
+  if (sparkleTex) return sparkleTex;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const glow = g.createRadialGradient(32, 32, 0, 32, 32, 20);
+  glow.addColorStop(0, 'rgba(255,255,255,0.9)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+    const r = i % 2 ? 4 : 30;
+    g.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r);
+  }
+  g.closePath();
+  g.fill();
+  sparkleTex = new THREE.CanvasTexture(c);
+  sparkleTex.colorSpace = THREE.SRGBColorSpace;
+  return sparkleTex;
+}
 
 // Pre-generated video static frames: grey noise with bright scan-tear lines and dark dropout rows.
 let staticTextures = null;
