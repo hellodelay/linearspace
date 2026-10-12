@@ -57,8 +57,11 @@ the cue-driven board matches the sim snapshot at every TU boundary, including af
   so pilots are presentation-only for now.
 - [portraits.js](src/present/portraits.js) draws procedural anime-style placeholder portraits on a
   canvas, with mood variants (neutral, happy, angry, hurt, shout).
-- By default, units render as slanted cards (the header toggle switches back to geometric shapes). This
-  departs from GDD 36, which keeps units geometric and puts portraits next to pilot chatter.
+- On the board, units are flat hex tokens showing the unit badge, with a hex border in the side color
+  (the header toggle switches back to geometric shapes).
+- During battle, the bottom panel shows a live status card per unit, squad on the left and hostiles on
+  the right. Tap a card to select its unit. This departs from GDD 36, which keeps units geometric and
+  puts portraits next to pilot chatter.
   - The card has two slices, the unit badge and the pilot portrait.
   - Damage taken is a translucent red fill rising over the unit badge; there's no overlay at full HP.
   - The resource is a blue border around the equipment strip. It fills from the middle of the left
@@ -85,9 +88,9 @@ Triggers resolve inside the simulation and are logged as `equip_trigger` events,
 event that caused them. Buff expiry is logged as `buff_end`. The presentation plays each trigger just
 after its cause.
 
-There is no shop yet, so the deployment screen has a free **Armory** tab. Drag an item onto a deployed
-unit to equip it, and tap a filled slot in the unit panel to remove it. A unit keeps its equipment when
-benched.
+There is no shop yet, so the deployment tray has a free **Items** column beside the unit cards. Drag an
+item onto a unit's card to equip it (benched units included), and tap a filled slot in the details panel
+to remove it.
 
 Assumptions (GDD 20 TBD, see [config.js](src/sim/config.js)):
 

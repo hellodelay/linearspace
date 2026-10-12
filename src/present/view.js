@@ -74,11 +74,13 @@ export const CAMERA_MODES = Object.freeze({
   tilt: { yaw: 0, pitch: 55, elev: 0.15, lift: 1 },
   // Lower than true isometric (35.26 deg) so the board reads flatter.
   // Diagonal view from the south-east: the player side sits lower-left and advances up and to the
-  // right. Pitch sits below true isometric (35.26 deg) so the board reads flat; raising it makes the
-  // board taller and narrower on screen.
-  iso: { yaw: 45, pitch: 32, elev: 0.15, lift: 1 },
+  // right. Pitch is steep so the board is tall enough to fill a portrait screen; lowering it makes the
+  // board flatter and wider.
+  iso: { yaw: 45, pitch: 68, elev: 0.15, lift: 1 },
 });
 const CAMERA_TWEEN_MS = 600;
+// Extra space around the board's hex corners when framing, in hex radii.
+const FIT_MARGIN = 0.12;
 const CAMERA_DISTANCE = 60;
 const GROUND = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
@@ -100,7 +102,7 @@ const noise = (n) => {
 };
 
 export class BattleView {
-  constructor(canvas, overlay) {
+  constructor(canvas, overlay, cardCanvas) {
     this.canvas = canvas;
     this.overlay = overlay;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -119,6 +121,8 @@ export class BattleView {
     this.elev = 0;
     this.lift = 0;
     this.shakeOffset = { x: 0, y: 0 };
+    // Screen pixels at the top of the stage covered by the HUD; the board is framed below them.
+    this.insetTop = 0;
     this.raycaster = new THREE.Raycaster();
     this.tmpA = new THREE.Vector3();
     this.tmpB = new THREE.Vector3();
@@ -141,8 +145,24 @@ export class BattleView {
     this.fxGroup = new THREE.Group();
     this.scene.add(this.boardGroup, this.unitGroup, this.fxGroup);
     this.tokenScene = new THREE.Scene();
-    // Drawn after the cards, without bloom, so melee blades and slash marks sit over the card they hit.
+    // Drawn after the tokens, without bloom, so melee blades and slash marks sit over the unit they hit.
     this.overlayScene = new THREE.Scene();
+    // Status cards render on their own canvas in the bottom panel.
+    this.cardCanvas = cardCanvas;
+    this.cardRenderer = new THREE.WebGLRenderer({ canvas: cardCanvas, antialias: true, alpha: true });
+    this.cardRenderer.setPixelRatio(this.pixelRatio);
+    this.cardRenderer.setClearColor(0x000000, 0);
+    this.cardScene = new THREE.Scene();
+    this.cardCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -10, 10);
+    this.cardSize = { w: 0, h: 0 };
+    // 'deploy' shows roster cards (one per roster unit, deployed or benched); 'battle' shows the cards of
+    // the units in the battle, squad on the left and hostiles on the right.
+    this.trayMode = 'battle';
+    this.battleLayout = null;
+    this.rosterLayout = null;
+    this.rosterCards = [];
+    this.rosterFocus = null;
+    this.cardHighlight = null;
     this.usePortraits = true;
     this.speakingId = null;
     this.ghostId = null;
@@ -213,6 +233,11 @@ export class BattleView {
       maxY = Math.max(maxY, w.y + 1);
     }
     this.bounds = { minX, maxX, minY, maxY };
+    // The camera frames the actual hex corners (plus a small margin), not the bounding rectangle.
+    this.fitPoints = cells.flatMap((c) => {
+      const w = hexToWorld(c);
+      return hexCorners(w.x, w.y, 1 + FIT_MARGIN);
+    });
 
     const lineGeo = new THREE.BufferGeometry();
     lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
@@ -311,25 +336,25 @@ export class BattleView {
     cam.lookAt(cx, cy, 0);
     cam.updateMatrixWorld();
 
-    const margin = 0.6;
-    const top = this.elev + 0.8;
+    // Shapes and effects hover up to this high above the board.
+    const top = this.elev + 0.3;
     const v = new THREE.Vector3();
     let x0 = Infinity;
     let x1 = -Infinity;
     let y0 = Infinity;
     let y1 = -Infinity;
-    for (const x of [minX - margin, maxX + margin]) {
-      for (const y of [minY - margin, maxY + margin]) {
-        for (const z of [0, top]) {
-          v.set(x, y, z).applyMatrix4(cam.matrixWorldInverse);
-          x0 = Math.min(x0, v.x);
-          x1 = Math.max(x1, v.x);
-          y0 = Math.min(y0, v.y);
-          y1 = Math.max(y1, v.y);
-        }
+    for (const p of this.fitPoints) {
+      for (const z of [0, top]) {
+        v.set(p.x, p.y, z).applyMatrix4(cam.matrixWorldInverse);
+        x0 = Math.min(x0, v.x);
+        x1 = Math.max(x1, v.x);
+        y0 = Math.min(y0, v.y);
+        y1 = Math.max(y1, v.y);
       }
     }
-    const aspect = this.size.w / this.size.h;
+    // Fit the board into the stage area below the HUD, then extend the frustum up under the HUD.
+    const availH = Math.max(1, this.size.h - this.insetTop);
+    const aspect = this.size.w / availH;
     let halfW = (x1 - x0) / 2;
     let halfH = (y1 - y0) / 2;
     if (halfW / halfH > aspect) halfH = halfW / aspect;
@@ -337,8 +362,14 @@ export class BattleView {
     // Shake slides the frustum in view space, so the framing math above stays unshaken.
     const mx = (x0 + x1) / 2 - this.shakeOffset.x;
     const my = (y0 + y1) / 2 - this.shakeOffset.y;
-    Object.assign(cam, { left: mx - halfW, right: mx + halfW, top: my + halfH, bottom: my - halfH });
+    const bottom = my - halfH;
+    Object.assign(cam, { left: mx - halfW, right: mx + halfW, bottom, top: bottom + (2 * halfH * this.size.h) / availH });
     cam.updateProjectionMatrix();
+  }
+
+  setTopInset(px) {
+    this.insetTop = px;
+    this.fitCamera();
   }
 
   setBloom(enabled) {
@@ -353,6 +384,7 @@ export class BattleView {
     this.units.clear();
     this.unitGroup.clear();
     this.tokenScene.clear();
+    this.cardScene.clear();
     this.defs = setup.defs;
     this.equipDefs = setup.equipment ?? {};
     this.attackTimes = null;
@@ -362,7 +394,9 @@ export class BattleView {
       this.units.set(spec.id, v);
       this.unitGroup.add(v.group);
       this.tokenScene.add(v.token);
+      if (v.card) this.cardScene.add(v.card.group);
     }
+    this.layoutCards(setup);
   }
 
   // Playback sink: start of a battle or a backwards seek.
@@ -454,7 +488,7 @@ export class BattleView {
     for (const unit of this.units.values()) {
       if (!this.board.units.get(unit.id).alive) continue;
       const p = this.unitPosition(unit, this.pt);
-      v.set(p.x, p.y, this.elev).project(this.camera);
+      v.set(p.x, p.y, this.usePortraits ? TOKEN.z : this.elev).project(this.camera);
       const d = Math.hypot(rect.left + ((v.x + 1) / 2) * rect.width - clientX, rect.top + ((1 - v.y) / 2) * rect.height - clientY);
       if (d < bestDist) {
         best = unit.id;
@@ -723,6 +757,7 @@ export class BattleView {
     this.renderer.autoClear = false;
     this.renderer.render(this.tokenScene, this.camera);
     this.renderer.render(this.overlayScene, this.camera);
+    this.renderCards(pt);
     this.renderer.autoClear = true;
   }
 
@@ -745,6 +780,9 @@ export class BattleView {
     const up = this.tmpB.setFromMatrixColumn(this.camera.matrixWorld, 1);
     for (const v of this.units.values()) {
       const s = this.board.units.get(v.id);
+      const ratio = s.hp / s.maxHp;
+      if (ratio > v.lag) v.lag = ratio;
+      else v.lag = Math.max(ratio, v.lag - dtTU * 0.6);
       const p = this.unitPosition(v, pt);
       v.group.position.set(p.x, p.y, 0);
       let opacity = 1;
@@ -764,83 +802,39 @@ export class BattleView {
       const ox = jolt ? right.x * jolt.x + up.x * jolt.y : 0;
       const oy = jolt ? right.y * jolt.x + up.y * jolt.y : 0;
       const oz = jolt ? right.z * jolt.x + up.z * jolt.y : 0;
+      const hexes = this.usePortraits && !!v.hex;
+      const ghost = v.id === this.ghostId ? 0.3 : 1;
+      const flash = clamp01(1 - (pt - v.flashT) / FX.flash);
+
+      // Shapes mode: a billboarded shape and HP bar hovering over a side ring.
       v.upright.position.set(ox, oy, this.elev + oz);
       v.upright.quaternion.copy(this.camera.quaternion);
-      v.stem.visible = this.elev > 0.05;
+      v.body.visible = !hexes;
+      v.sideRing.visible = !hexes;
+      v.stem.visible = !hexes && this.elev > 0.05;
       v.stem.scale.z = Math.max(this.elev, 1e-3);
-      const portraits = this.usePortraits && !!v.card;
-      const ghost = v.id === this.ghostId ? 0.3 : 1;
-      v.body.visible = !portraits;
-      v.token.visible = portraits;
-      if (v.frame) v.frame.visible = portraits;
       v.body.scale.setScalar(scale);
-      const flash = clamp01(1 - (pt - v.flashT) / FX.flash);
       v.outlineMat.color.copy(v.baseColor).lerp(WHITE, flash);
       v.outlineMat.opacity = opacity * ghost;
       v.fillMat.opacity = (0.2 * opacity + 0.3 * flash) * ghost;
       v.sideMat.opacity = 0.45 * opacity * ghost;
       v.stem.material.opacity = 0.4 * opacity * ghost;
-
-      const ratio = s.hp / s.maxHp;
-      if (ratio > v.lag) v.lag = ratio;
-      else v.lag = Math.max(ratio, v.lag - dtTU * 0.6);
-      if (portraits) {
-        const c = v.card;
-        const speaking = v.id === this.speakingId;
-        const pulse = speaking ? 1 + 0.06 * Math.sin(pt * 14) : 1;
-        v.token.position.set(p.x + ox, p.y + oy, this.elev + oz);
-        v.token.quaternion.copy(this.camera.quaternion);
-        v.token.scale.setScalar(CARD_SCALE * scale * pulse);
-        v.frame.scale.setScalar(CARD_SCALE * scale * pulse);
-        for (const m of c.mats) m.opacity = m.userData.base * CARD_OPACITY * opacity * ghost;
-        c.pilotMat.map = s.alive && ratio <= HURT_RATIO ? v.faces.hurt : v.faces.neutral;
-        // Static: cycle noise frames (offset per unit) and flicker the pilot image darker.
-        const st = this.staticLevel(v, pt);
-        const frame = Math.floor(pt * STATIC.fps) + v.noiseSeed;
-        c.staticLayer.visible = st > 0.01;
-        c.staticLayer.material.map = staticFrames()[frame % STATIC.frames];
-        c.staticLayer.material.opacity = st * STATIC.opacity * opacity * ghost;
-        c.pilotMat.color.setScalar(1 - STATIC.dim * st * noise(frame));
-        c.pilot.position.x = st > 0.01 ? (noise(frame + 17) - 0.5) * 2 * STATIC.jitter * st : 0;
-        c.flashMat.opacity = 0.55 * flash * opacity;
-        const warning = s.alive && ratio <= WARN_RATIO;
-        // Cubing the dip keeps the text near full opacity most of the beat, with a quick dip low.
-        const beat = 1 - Math.pow(0.5 - 0.5 * Math.sin(pt * Math.PI * 2 * WARN_PULSE_RATE), 3);
-        const warnPulse = WARN_PULSE_LOW + (1 - WARN_PULSE_LOW) * beat;
-        for (const part of c.warn.band) {
-          part.visible = warning;
-          part.material.opacity = WARN_OPACITY * opacity * ghost;
-        }
-        c.warn.text.visible = warning;
-        c.warn.text.material.opacity = warnPulse * opacity * ghost;
-        const res = this.resourceRatio(v.id, pt);
-        setBarFill(c.hpLag, c.hpX, 1 - ratio);
-        setBarFill(c.hpFill, c.hpX, 1 - v.lag);
-        setFillEdge(c.hpEdge, c.hpX, s.alive ? 1 - ratio : 0);
-        const [upperTip, lowerTip] = setRing(c.ring, c.ringX, res, CARD_EQ);
-        setSparkle(c.resSpark, upperTip, pt, 0);
-        setSparkle(c.resSpark2, lowerTip, pt, 0.9);
-        // Damage sparkle sweeps left to right along the damage line, fading in and out at the ends.
-        const damage = s.alive ? 1 - ratio : 0;
-        const dy = CARD_MAIN[0] + (CARD_MAIN[1] - CARD_MAIN[0]) * damage;
-        const sweep = (pt * SPARKLE.sweepRate + v.noiseSeed * 0.13) % 1;
-        const sx = c.hpX[0] + (c.hpX[1] - c.hpX[0]) * sweep;
-        setSparkle(c.hpSpark, damage > 0 ? { x: sx + CARD_K * dy, y: dy } : null, pt, 1.7);
-        c.hpSpark.scale.multiplyScalar(Math.sin(Math.PI * sweep));
-        // Slots flash when their item triggers and shimmer while its buff is active.
-        for (const slot of c.slots) {
-          if (!slot.itemId) continue;
-          const tf = v.slotFlash.get(slot.itemId);
-          const f = tf == null ? 0 : clamp01(1 - (pt - tf) / 0.5);
-          const buffed = this.records.buffs.some((b) => b.unitId === v.id && b.item === slot.itemId && pt >= b.t0);
-          slot.mesh.material.color.copy(slot.color).lerp(WHITE, Math.max(f, buffed ? 0.25 + 0.15 * Math.sin(pt * 8) : 0));
-        }
-        v.frame.material.color.copy(v.baseColor).lerp(WHITE, Math.max(flash, speaking ? 0.4 : 0));
-        v.frame.material.opacity = opacity * ghost;
-      }
       v.hpFg.scale.x = Math.max(1e-4, ratio * HP_W);
       v.hpLag.scale.x = Math.max(1e-4, v.lag * HP_W);
-      v.hpGroup.visible = s.alive && !portraits;
+      v.hpGroup.visible = s.alive && !hexes;
+
+      // Hex mode: the unit image lies flat in its hex with a side-colored border.
+      v.token.visible = hexes;
+      if (hexes) {
+        const speaking = v.id === this.speakingId;
+        const pulse = speaking ? 1 + 0.06 * Math.sin(pt * 14) : 1;
+        v.token.position.set(p.x + ox, p.y + oy, TOKEN.z + oz);
+        v.token.scale.setScalar(scale * pulse);
+        v.hex.image.material.opacity = opacity * ghost;
+        v.hex.border.material.opacity = opacity * ghost;
+        v.hex.border.material.color.copy(v.sideColor).lerp(WHITE, Math.max(flash, speaking ? 0.4 : 0));
+        v.hex.flash.material.opacity = 0.6 * flash * opacity;
+      }
     }
     const sel = this.selectedId && this.units.get(this.selectedId);
     this.selectRing.visible = !!sel && sel.group.visible;
@@ -849,6 +843,210 @@ export class BattleView {
       this.selectRing.rotation.z = pt * 0.8;
       this.selectRing.material.opacity = 0.5 + 0.3 * Math.sin(pt * 6);
     }
+  }
+
+  // ---- Card tray ----
+
+  resizeCards(w, h) {
+    this.cardSize = { w, h };
+    if (w < 2 || h < 2) return;
+    this.cardRenderer.setSize(w, h, false);
+    this.fitCards();
+  }
+
+  setTrayMode(mode) {
+    this.trayMode = mode;
+    this.fitCards();
+  }
+
+  // Battle cards: the squad in the bottom row, hostiles in the rows above.
+  layoutCards(setup) {
+    const withCard = (side) => setup.units.filter((u) => u.side === side && this.units.get(u.id)?.card).map((u) => u.id);
+    this.trayPlayers = withCard('player');
+    this.trayEnemies = withCard('enemy');
+    this.fitCards();
+  }
+
+  // Deploy cards: one per roster unit, in the squad row. entries: [{ defId, def, deployed, equipment }].
+  setRosterCards(entries, equipDefs, focusDefId) {
+    for (const r of this.rosterCards) {
+      this.cardScene.remove(r.card.group);
+      disposeTree(r.card.group);
+    }
+    this.rosterCards = entries.map((e) => {
+      const portrait = CAST[e.defId]?.portrait;
+      const faces = { neutral: portraitTexture(portrait, 'neutral'), hurt: portraitTexture(portrait, 'hurt') };
+      const card = makeCard({ defId: e.defId, side: 'player' }, e.def.visual, faces.neutral, e.equipment, equipDefs);
+      card.frame = makeCardFrame(e.def.visual.color);
+      card.group.add(card.frame);
+      this.cardScene.add(card.group);
+      return { ...e, card, baseColor: new THREE.Color(e.def.visual.color) };
+    });
+    this.rosterFocus = focusDefId;
+    this.fitCards();
+  }
+
+  // Roster card to mark as a drop target (deploy item drags).
+  setCardHighlight(defId) {
+    this.cardHighlight = defId;
+  }
+
+  activeLayout() {
+    return this.trayMode === 'deploy' ? this.rosterLayout : this.battleLayout;
+  }
+
+  // The tray canvas is split into a squad row on top and an area below it (enemies in battle; the
+  // items list covers it while deploying). Card size is set by fitting CARD_TRAY.perRow cards across
+  // the width and one row into the squad area, so it is the same in both modes and for both sides.
+  fitCards() {
+    const { w, h } = this.cardSize;
+    if (w < 2 || h < 2) return;
+    const cell = cardCell();
+    const perRow = CARD_TRAY.perRow;
+    const pxPerUnit = Math.min(w / (perRow * cell.w), (h * (CARD_TRAY.squadShare - CARD_TRAY.dividerGap)) / cell.h);
+    const ww = w / pxPerUnit;
+    const hw = h / pxPerUnit;
+    Object.assign(this.cardCamera, { left: 0, right: ww, top: 0, bottom: -hw });
+    this.cardCamera.updateProjectionMatrix();
+
+    // Rows use the same column pitch and are centered, so a short row lines up with a full one.
+    const colW = ww / perRow;
+    const rowX = (count, j) => ww / 2 + (j - (count - 1) / 2) * colW;
+    const squadH = hw * CARD_TRAY.squadShare;
+    const gap = hw * CARD_TRAY.dividerGap;
+    const squadY = -(squadH - gap) / 2;
+    const squadRow = (keys) => {
+      const slots = new Map();
+      keys.slice(0, perRow).forEach((key, j) => slots.set(key, { x: rowX(Math.min(keys.length, perRow), j), y: squadY }));
+      return slots;
+    };
+
+    const battle = squadRow(this.trayPlayers ?? []);
+    const enemies = this.trayEnemies ?? [];
+    const rows = Math.max(1, Math.ceil(enemies.length / perRow));
+    const restTop = squadH + gap;
+    const restH = hw - restTop;
+    enemies.forEach((id, i) => {
+      const row = Math.floor(i / perRow);
+      const inRow = Math.min(perRow, enemies.length - row * perRow);
+      battle.set(id, { x: rowX(inRow, i % perRow), y: -restTop - restH * ((row + 0.5) / rows) });
+    });
+    this.battleLayout = { slots: battle, cell };
+    this.rosterLayout = { slots: squadRow(this.rosterCards.map((r) => r.defId)), cell };
+  }
+
+  // Key of the active layout's card under a screen point (a unit id in battle, a roster def id while
+  // deploying), or null.
+  cardAtPointer(clientX, clientY) {
+    const layout = this.activeLayout();
+    if (!layout || this.cardSize.w < 2) return null;
+    const rect = this.cardCanvas.getBoundingClientRect();
+    const cam = this.cardCamera;
+    const x = cam.left + ((clientX - rect.left) / rect.width) * (cam.right - cam.left);
+    const y = cam.top - ((clientY - rect.top) / rect.height) * (cam.top - cam.bottom);
+    for (const [key, slot] of layout.slots) {
+      if (Math.abs(x - slot.x) <= layout.cell.w / 2 && Math.abs(y - slot.y) <= layout.cell.h / 2) return key;
+    }
+    return null;
+  }
+
+  // Deploy roster cards: static status (full health, ready resource), benched units dimmed, the focused
+  // or drop-target card's outline brightened.
+  renderRosterCards(pt) {
+    for (const r of this.rosterCards) {
+      const c = r.card;
+      const slot = this.rosterLayout.slots.get(r.defId);
+      c.group.visible = !!slot;
+      if (!slot) continue;
+      c.group.position.set(slot.x, slot.y, 0);
+      const opacity = r.deployed ? 1 : CARD_TRAY.benchOpacity;
+      for (const m of c.mats) m.opacity = m.userData.base * opacity;
+      c.staticLayer.visible = false;
+      c.flashMat.opacity = 0;
+      for (const part of [...c.warn.band, c.warn.text]) part.visible = false;
+      setBarFill(c.hpLag, c.hpX, 0);
+      setBarFill(c.hpFill, c.hpX, 0);
+      setFillEdge(c.hpEdge, c.hpX, 0);
+      const [upperTip, lowerTip] = setRing(c.ring, c.ringX, 1, CARD_EQ);
+      setSparkle(c.resSpark, upperTip, pt, 0);
+      setSparkle(c.resSpark2, lowerTip, pt, 0.9);
+      setSparkle(c.hpSpark, null, pt, 0);
+      const lit = r.defId === this.cardHighlight ? 0.85 : r.defId === this.rosterFocus ? 0.45 : 0;
+      c.frame.material.color.copy(r.baseColor).lerp(WHITE, lit);
+      c.frame.material.opacity = opacity;
+    }
+  }
+
+  // Live status cards: damage overlay, resource ring, pilot static, DANGER band and equipment slots.
+  // Destroyed units' cards stay, dimmed.
+  renderCards(pt) {
+    if (this.cardSize.w < 2 || this.cardSize.h < 2) return;
+    const deploy = this.trayMode === 'deploy';
+    for (const r of this.rosterCards) r.card.group.visible = false;
+    if (deploy && this.rosterLayout) this.renderRosterCards(pt);
+    for (const v of this.units.values()) {
+      const c = v.card;
+      const slot = this.battleLayout?.slots.get(v.id);
+      if (!c) continue;
+      c.group.visible = !deploy && !!slot;
+      if (!c.group.visible) continue;
+      const s = this.board.units.get(v.id);
+      const ratio = s.hp / s.maxHp;
+      const deathU = s.alive ? 0 : v.deathT == null ? 1 : clamp01((pt - v.deathT) / FX.death);
+      const opacity = 1 - (1 - CARD_TRAY.deadOpacity) * deathU;
+      const flash = clamp01(1 - (pt - v.flashT) / FX.flash);
+      const speaking = v.id === this.speakingId;
+      const pulse = speaking ? 1 + 0.06 * Math.sin(pt * 14) : 1;
+      const jolt = this.hitShake(v, pt);
+      c.group.position.set(slot.x + (jolt?.x ?? 0), slot.y + (jolt?.y ?? 0), 0);
+      c.group.scale.setScalar(pulse);
+      for (const m of c.mats) m.opacity = m.userData.base * opacity;
+      c.pilotMat.map = s.alive && ratio <= HURT_RATIO ? v.faces.hurt : v.faces.neutral;
+      // Static: cycle noise frames (offset per unit) and flicker the pilot image darker.
+      const st = this.staticLevel(v, pt);
+      const frame = Math.floor(pt * STATIC.fps) + v.noiseSeed;
+      c.staticLayer.visible = st > 0.01;
+      c.staticLayer.material.map = staticFrames()[frame % STATIC.frames];
+      c.staticLayer.material.opacity = st * STATIC.opacity * opacity;
+      c.pilotMat.color.setScalar(1 - STATIC.dim * st * noise(frame));
+      c.pilot.position.x = st > 0.01 ? (noise(frame + 17) - 0.5) * 2 * STATIC.jitter * st : 0;
+      c.flashMat.opacity = 0.55 * flash * opacity;
+      const warning = s.alive && ratio <= WARN_RATIO;
+      // Cubing the dip keeps the text near full opacity most of the beat, with a quick dip low.
+      const beat = 1 - Math.pow(0.5 - 0.5 * Math.sin(pt * Math.PI * 2 * WARN_PULSE_RATE), 3);
+      const warnPulse = WARN_PULSE_LOW + (1 - WARN_PULSE_LOW) * beat;
+      for (const part of c.warn.band) {
+        part.visible = warning;
+        part.material.opacity = WARN_OPACITY * opacity;
+      }
+      c.warn.text.visible = warning;
+      c.warn.text.material.opacity = warnPulse * opacity;
+      const res = s.alive ? this.resourceRatio(v.id, pt) : 0;
+      setBarFill(c.hpLag, c.hpX, 1 - ratio);
+      setBarFill(c.hpFill, c.hpX, 1 - v.lag);
+      setFillEdge(c.hpEdge, c.hpX, s.alive ? 1 - ratio : 0);
+      const [upperTip, lowerTip] = setRing(c.ring, c.ringX, res, CARD_EQ);
+      setSparkle(c.resSpark, upperTip, pt, 0);
+      setSparkle(c.resSpark2, lowerTip, pt, 0.9);
+      // Damage sparkle sweeps left to right along the damage line, fading in and out at the ends.
+      const damage = s.alive ? 1 - ratio : 0;
+      const dy = CARD_MAIN[0] + (CARD_MAIN[1] - CARD_MAIN[0]) * damage;
+      const sweep = (pt * SPARKLE.sweepRate + v.noiseSeed * 0.13) % 1;
+      const sx = c.hpX[0] + (c.hpX[1] - c.hpX[0]) * sweep;
+      setSparkle(c.hpSpark, damage > 0 ? { x: sx + CARD_K * dy, y: dy } : null, pt, 1.7);
+      c.hpSpark.scale.multiplyScalar(Math.sin(Math.PI * sweep));
+      // Slots flash when their item triggers and shimmer while its buff is active.
+      for (const slotMesh of c.slots) {
+        if (!slotMesh.itemId) continue;
+        const tf = v.slotFlash.get(slotMesh.itemId);
+        const f = tf == null ? 0 : clamp01(1 - (pt - tf) / 0.5);
+        const buffed = this.records.buffs.some((b) => b.unitId === v.id && b.item === slotMesh.itemId && pt >= b.t0);
+        slotMesh.mesh.material.color.copy(slotMesh.color).lerp(WHITE, Math.max(f, buffed ? 0.25 + 0.15 * Math.sin(pt * 8) : 0));
+      }
+      c.frame.material.color.copy(v.baseColor).lerp(WHITE, Math.max(flash, speaking ? 0.4 : 0));
+      c.frame.material.opacity = opacity;
+    }
+    this.cardRenderer.render(this.cardScene, this.cardCamera);
   }
 
   renderTargets(pt) {
@@ -1256,6 +1454,14 @@ export class BattleView {
 // ---- Unit construction ----
 
 const HP_W = 0.9;
+// Board token: the unit image clipped to a hex inside its tile, with a side-colored hex border.
+const TOKEN = { radius: 0.82, border: 0.08, z: 0.02 };
+const hexImageGeo = new THREE.CircleGeometry(TOKEN.radius, 6, Math.PI / 6);
+const hexBorderGeo = new THREE.RingGeometry(TOKEN.radius, TOKEN.radius + TOKEN.border, 6, 1, Math.PI / 6);
+// Bottom tray: cards per row, the share of the tray height for the squad row, the empty space kept on
+// each side of the divider (share of tray height), cell padding (card units), the opacity a destroyed
+// unit's card settles at, and benched units' card opacity while deploying.
+const CARD_TRAY = { perRow: 5, squadShare: 1 / 3, dividerGap: 0.04, padX: 0.12, padY: 0.12, deadOpacity: 0.3, benchOpacity: 0.45 };
 const TRAIL_POINTS = 10;
 const HURT_RATIO = 0.35;
 // At or below this HP ratio a DANGER band with pulsing text runs along the bottom of the unit portrait.
@@ -1306,10 +1512,6 @@ const CARD = (() => {
   const eq = 0.2 * h;
   return { w, h, eq, gap, skew: slant * (h + gap + eq), sliceGap, border: 0.012 };
 })();
-// Overall card size multiplier, applied to the card, its depth slab and its outline together.
-const CARD_SCALE = 0.8;
-// Whole-card opacity (25% transparent).
-const CARD_OPACITY = 0.75;
 // Damage taken rises from the bottom of the unit image as a translucent red overlay, with a brighter
 // line at its top. Opacities are before the card's own opacity.
 const FILL = { opacity: 0.3, lagOpacity: 0.225, edge: 0.018 };
@@ -1548,7 +1750,32 @@ function makeCardDepth(x0, x1, y0, y1) {
   return geo;
 }
 
-// Glowing outline of the card and its equipment strip, drawn in the bloom scene.
+// Tray cell size around one card, in card units.
+function cardCell() {
+  return { w: CARD.w + CARD.skew + CARD_TRAY.padX, h: CARD_T + CARD_TRAY.padY };
+}
+
+function disposeTree(root) {
+  root.traverse((o) => {
+    if (!o.isMesh && !o.isLine) return;
+    o.geometry.dispose();
+    o.material.dispose();
+  });
+}
+
+function makeHexToken(spec, visual) {
+  const mat = (params) => new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, ...params });
+  const group = new THREE.Group();
+  const image = new THREE.Mesh(hexImageGeo, mat({ map: unitIconTexture(spec.defId, visual, spec.side) }));
+  const flash = new THREE.Mesh(hexImageGeo, mat({ color: 0xffffff, opacity: 0 }));
+  const border = new THREE.Mesh(hexBorderGeo, mat({ color: SIDE_COLOR[spec.side] }));
+  flash.position.z = 0.001;
+  border.position.z = 0.002;
+  group.add(image, flash, border);
+  return { group, image, flash, border };
+}
+
+// Outline of the card and its equipment strip.
 function makeCardFrame(color) {
   const corners = (x0, x1, ya, yb) => [[x0, ya], [x1, ya], [x1, yb], [x0, yb]].map(([x, y]) => [x + CARD_K * y, y]);
   const pts = [];
@@ -1641,24 +1868,24 @@ function makeUnit(spec, def, equipDefs = {}) {
   hpFg.position.z = 0.002;
   hpGroup.add(hpBg, hpLag, hpFg);
 
-  // Card token, rendered in the unbloomed token scene; its glowing outline sits in the bloom scene.
-  // Units without a cast entry keep their shape.
+  // Board token: the unit image flat in its hex (unbloomed token scene). Units without a cast entry
+  // keep their shape. Piloted units also get a status card for the bottom tray.
   const portrait = CAST[spec.defId]?.portrait;
-  let token = new THREE.Group();
+  const hex = makeHexToken(spec, visual);
+  const token = hex.group;
   let card = null;
-  let frame = null;
   let faces = null;
   if (portrait) {
     faces = { neutral: portraitTexture(portrait, 'neutral'), hurt: portraitTexture(portrait, 'hurt') };
     card = makeCard(spec, visual, faces.neutral, spec.equipment ?? [], equipDefs);
-    token = card.group;
-    frame = makeCardFrame(visual.color);
+    card.frame = makeCardFrame(visual.color);
+    card.group.add(card.frame);
   }
 
-  // Upright parts billboard toward the camera and hover at the view's elevation; the side ring stays on the board.
+  // Shapes mode: upright parts billboard toward the camera and hover at the view's elevation; the side
+  // ring stays on the board.
   const upright = new THREE.Group();
   upright.add(body, hpGroup);
-  if (frame) upright.add(frame);
   const stem = new THREE.Line(stemGeo, additive(SIDE_COLOR[spec.side], 0.4));
   stem.renderOrder = RO.unitFill;
 
@@ -1679,9 +1906,11 @@ function makeUnit(spec, def, equipDefs = {}) {
     upright,
     stem,
     body,
+    sideRing,
     token,
+    hex,
+    sideColor: new THREE.Color(SIDE_COLOR[spec.side]),
     card,
-    frame,
     faces,
     slotFlash: new Map(),
     outlineMat,
@@ -1702,10 +1931,10 @@ function makeUnit(spec, def, equipDefs = {}) {
 
 // Shared geometries and portrait textures are kept; per-unit geometry and materials are freed.
 function disposeUnit(v) {
-  for (const root of [v.group, v.token]) {
+  for (const root of [v.group, v.token, v.card?.group].filter(Boolean)) {
     root.traverse((o) => {
       if (!o.isMesh && !o.isLine) return;
-      if (o.geometry !== stemGeo) o.geometry.dispose();
+      if (o.geometry !== stemGeo && o.geometry !== hexImageGeo && o.geometry !== hexBorderGeo) o.geometry.dispose();
       o.material.dispose();
     });
   }

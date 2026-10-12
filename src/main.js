@@ -38,7 +38,6 @@ const el = {
   toast: $('toast'),
   inspect: $('inspect'),
   log: $('log'),
-  roster: $('roster'),
   deployMsg: $('deploy-msg'),
   seed: $('seed'),
   commit: $('btn-commit'),
@@ -48,8 +47,7 @@ const el = {
   ghost: $('drag-ghost'),
   itemGhost: $('drag-item'),
   armory: $('armory'),
-  tabUnits: $('tab-units'),
-  tabArmory: $('tab-armory'),
+  cards: $('cards'),
   dialogue: $('dialogue'),
   dlgPortrait: $('dlg-portrait'),
   dlgCallsign: $('dlg-callsign'),
@@ -57,7 +55,7 @@ const el = {
   dlgText: $('dlg-text'),
 };
 
-const view = new BattleView(el.canvas, el.fx);
+const view = new BattleView(el.canvas, el.fx, el.cards);
 view.setGrid(scenario.grid);
 
 const app = {
@@ -65,7 +63,6 @@ const app = {
   deployment: scenario.defaultDeployment.map((d) => ({ ...d })),
   // Equipment per roster unit ({ defId: [equipmentId] }); kept when a unit is benched.
   loadout: structuredClone(scenario.defaultLoadout ?? {}),
-  trayTab: 'units',
   // Deployment inspection: { defId, unitId } of the unit whose stats and range are shown, or { itemId }.
   focus: null,
   inspectId: null,
@@ -90,12 +87,27 @@ const portraitOf = (defId, mood = 'neutral') => (CAST[defId] ? portraitUrl(CAST[
 
 new ResizeObserver(() => view.resize(el.stage.clientWidth, el.stage.clientHeight)).observe(el.stage);
 view.resize(el.stage.clientWidth, el.stage.clientHeight);
+// Status cards fill the canvas in the bottom panel during battle; tap a card to select its unit.
+// The card canvas covers the whole tray in both modes, so cards keep their size when the mode changes.
+new ResizeObserver(() => view.resizeCards(el.cards.clientWidth, el.cards.clientHeight)).observe(el.cards.parentElement);
+el.cards.addEventListener('click', (e) => {
+  if (app.mode === 'battle') onBattleTap(view.cardAtPointer(e.clientX, e.clientY));
+});
+// While deploying, a roster card can be tapped to select it or dragged onto the board to deploy.
+el.cards.addEventListener('pointerdown', (e) => {
+  if (app.mode !== 'deploy') return;
+  const defId = view.cardAtPointer(e.clientX, e.clientY);
+  if (defId) beginPress(e, { defId, unitId: unitIdOf(defId), source: 'card' });
+});
+// Frame the board below the HUD strip that overlays the top of the stage.
+const hud = $('hud');
+new ResizeObserver(() => view.setTopInset(hud.offsetHeight)).observe(hud);
+view.setTopInset(hud.offsetHeight);
 
 // ---- Deployment ----
 
 const seed = () => Number(el.seed.value) >>> 0;
 const draftSetup = () => buildBattleSetup({ scenario, deployment: app.deployment, seed: seed(), loadout: app.loadout });
-const item6 = (id) => hex6(EQUIPMENT_DEFS[id]?.color ?? 0xffffff);
 const inZone = (off) => scenario.deployRows.includes(off.row) && off.col >= 0 && off.col < scenario.grid.width;
 const deployIndex = (defId) => app.deployment.findIndex((d) => d.defId === defId);
 const unitIdOf = (defId) => (deployIndex(defId) >= 0 ? `p${deployIndex(defId) + 1}` : null);
@@ -107,6 +119,7 @@ function enterDeploy() {
   app.inspectId = null;
   app.focus = null;
   document.body.dataset.mode = 'deploy';
+  view.setTrayMode('deploy');
   el.mode.textContent = 'DEPLOY';
   el.tu.textContent = `Seed ${seed()}`;
   hideBanner();
@@ -140,7 +153,12 @@ function refreshDeploy() {
   if (spec) paintRange(colors, spec.pos, setup.defs[spec.defId].stats.range, spec.side === 'enemy');
   view.setHighlights(colors);
   view.setSelected(focusId);
-  renderRoster();
+  // Roster cards: every roster unit, benched ones dimmed; items drop onto these.
+  view.setRosterCards(
+    scenario.roster.map((defId) => ({ defId, def: UNIT_DEFS[defId], deployed: deployIndex(defId) >= 0, equipment: app.loadout[defId] ?? [] })),
+    EQUIPMENT_DEFS,
+    app.focus?.defId ?? null,
+  );
   renderArmory();
   if (app.focus?.itemId) renderItemInspect(app.focus.itemId);
   else if (app.focus) renderInspect(app.focus.defId, spec?.side ?? 'player', focusId);
@@ -149,35 +167,21 @@ function refreshDeploy() {
   el.commit.disabled = errors.length > 0;
   el.deployMsg.textContent =
     errors[0] ??
-    (app.trayTab === 'armory'
-      ? 'Drag gear onto a deployed unit. Tap a slot in the unit panel to remove it.'
-      : `${app.deployment.length}/${scenario.deployCap} deployed. Drag units onto blue hexes; drag back to the tray to bench.`);
-}
-
-function setTrayTab(tab) {
-  app.trayTab = tab;
-  el.roster.hidden = tab !== 'units';
-  el.armory.hidden = tab !== 'armory';
-  el.tabUnits.classList.toggle('active', tab === 'units');
-  el.tabArmory.classList.toggle('active', tab === 'armory');
-  refreshDeploy();
+    `${app.deployment.length}/${scenario.deployCap} deployed. Drag cards to blue hexes and gear onto cards.`;
 }
 
 // Free equipment pool while there is no shop; each item can go on any number of units.
 function renderArmory() {
   el.armory.innerHTML = '';
   for (const [itemId, item] of Object.entries(EQUIPMENT_DEFS)) {
-    const card = document.createElement('div');
-    card.className = `card item${app.focus?.itemId === itemId ? ' selected' : ''}`;
-    card.style.setProperty('--unit-color', hex6(item.color));
-    card.innerHTML = `
-      <span class="item-badge">${item.short}</span>
-      <span class="card-text">
-        <span class="card-name">${item.name}</span>
-        <span class="card-role">${item.desc}</span>
-      </span>`;
-    card.addEventListener('pointerdown', (e) => beginPress(e, { itemId, source: 'armory' }));
-    el.armory.appendChild(card);
+    // Just the item's square badge; the name and description show in the details section on tap.
+    const tile = document.createElement('div');
+    tile.className = `item-badge item-tile${app.focus?.itemId === itemId ? ' selected' : ''}`;
+    tile.style.setProperty('--unit-color', hex6(item.color));
+    tile.title = `${item.name}: ${item.desc}`;
+    tile.textContent = item.short;
+    tile.addEventListener('pointerdown', (e) => beginPress(e, { itemId, source: 'armory' }));
+    el.armory.appendChild(tile);
   }
 }
 
@@ -188,36 +192,6 @@ function equip(defId, itemId) {
   if (items.length >= SIM_CONFIG.equipmentSlots) return showToast(`${UNIT_DEFS[defId].name}: all ${SIM_CONFIG.equipmentSlots} slots are full`);
   items.push(itemId);
   showToast(`${item.name} -> ${UNIT_DEFS[defId].name}`);
-}
-
-function slotPips(defId) {
-  const items = app.loadout[defId] ?? [];
-  let html = '';
-  for (let i = 0; i < SIM_CONFIG.equipmentSlots; i++) {
-    html += items[i] ? `<i style="background:${item6(items[i])}" title="${EQUIPMENT_DEFS[items[i]].name}"></i>` : '<i></i>';
-  }
-  return `<span class="card-slots">${html}</span>`;
-}
-
-function renderRoster() {
-  el.roster.innerHTML = '';
-  for (const defId of scenario.roster) {
-    const def = UNIT_DEFS[defId];
-    const placed = deployIndex(defId) >= 0;
-    const card = document.createElement('div');
-    card.className = `card${app.focus?.defId === defId ? ' selected' : ''}${placed ? ' placed' : ''}`;
-    card.style.setProperty('--unit-color', hex6(def.visual.color));
-    card.innerHTML = `
-      <img class="card-portrait" src="${portraitOf(defId)}" alt="" draggable="false" />
-      <span class="card-text">
-        <span class="card-name">${def.name}</span>
-        <span class="card-pilot">${CAST[defId]?.pilot ?? ''}</span>
-        <span class="card-role">${ROLE_LABELS[def.role]}</span>
-        <span class="card-state">${placed ? 'deployed' : 'bench'} ${slotPips(defId)}</span>
-      </span>`;
-    card.addEventListener('pointerdown', (e) => beginPress(e, { defId, unitId: unitIdOf(defId), source: 'card' }));
-    el.roster.appendChild(card);
-  }
 }
 
 // Drop rules: a hex in the zone takes the unit; another player unit there swaps (or is benched,
@@ -278,8 +252,9 @@ function beginPress(e, target) {
   press = { ...target, pointerId: e.pointerId, x: e.clientX, y: e.clientY, dragging: false };
 }
 
+// Over the unit card tray: a dragged board unit dropped here is benched.
 function overTray(x, y) {
-  const r = (app.trayTab === 'armory' ? el.armory : el.roster).getBoundingClientRect();
+  const r = el.cards.getBoundingClientRect();
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
@@ -310,7 +285,7 @@ window.addEventListener('pointermove', (e) => {
   view.setHighlights(dropPreview(press.defId, hex, overTray(e.clientX, e.clientY)));
 });
 
-// Equipment drag: the selection ring marks the deployed player unit the item would land on.
+// Equipment drag: the roster card under the pointer lights up as the drop target.
 function dragItem(e) {
   if (!press.dragging) {
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
@@ -322,8 +297,7 @@ function dragItem(e) {
     renderInspect(null);
   }
   el.itemGhost.style.transform = `translate(${e.clientX}px, ${e.clientY}px) translate(-50%, -50%)`;
-  const target = overCanvas(e.clientX, e.clientY) ? view.unitAtPointer(e.clientX, e.clientY) : null;
-  view.setSelected(target?.startsWith('p') ? target : null);
+  view.setCardHighlight(overTray(e.clientX, e.clientY) ? view.cardAtPointer(e.clientX, e.clientY) : null);
 }
 
 function endPress(e, cancelled) {
@@ -333,17 +307,17 @@ function endPress(e, cancelled) {
   el.ghost.hidden = true;
   el.itemGhost.hidden = true;
   view.setGhost(null);
+  view.setCardHighlight(null);
   if (p.itemId) {
     if (cancelled) return refreshDeploy();
     if (!p.dragging) {
       app.focus = app.focus?.itemId === p.itemId ? null : { itemId: p.itemId };
       return refreshDeploy();
     }
-    const target = overCanvas(e.clientX, e.clientY) ? view.unitAtPointer(e.clientX, e.clientY) : null;
-    if (target?.startsWith('p')) {
-      const defId = app.deployment[Number(target.slice(1)) - 1].defId;
+    const defId = overTray(e.clientX, e.clientY) ? view.cardAtPointer(e.clientX, e.clientY) : null;
+    if (defId) {
       equip(defId, p.itemId);
-      app.focus = { defId, unitId: target };
+      app.focus = { defId, unitId: unitIdOf(defId) };
     }
     return refreshDeploy();
   }
@@ -424,6 +398,7 @@ function commit() {
   app.playback = new Playback(timeline, sink, { secondsPerTU: SECONDS_PER_TU });
   app.playback.speed = Number(el.speeds.querySelector('.active')?.dataset.speed ?? 1);
   document.body.dataset.mode = 'battle';
+  view.setTrayMode('battle');
   el.mode.textContent = 'BATTLE';
   el.scrub.max = String(timeline.duration);
   view.setHighlights(null);
@@ -615,8 +590,7 @@ function updateHud() {
 // ---- Controls ----
 
 el.commit.addEventListener('click', commit);
-el.tabUnits.addEventListener('click', () => setTrayTab('units'));
-el.tabArmory.addEventListener('click', () => setTrayTab('armory'));
+
 $('btn-reset-formation').addEventListener('click', () => {
   app.deployment = scenario.defaultDeployment.map((d) => ({ ...d }));
   app.focus = null;

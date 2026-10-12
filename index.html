@@ -15,68 +15,79 @@
     </script>
   </head>
   <body data-mode="deploy">
-    <header>
-      <span class="title">LINEAR SPACE <small>tactical proto</small></span>
-      <span id="mode-label" class="mode">DEPLOY</span>
-      <span id="tu-readout" class="tu-readout"></span>
-      <button id="btn-camera" title="Cycle camera: top-down, tilted, isometric">View: Iso</button>
-      <button id="btn-portraits" class="active" title="Show units as pilot portraits or geometric shapes">Portraits</button>
-    </header>
+    <!-- Portrait frame: fills a touch device, letterboxed to a phone-portrait shape on desktop. -->
+    <div id="app">
+      <main id="stage">
+        <canvas id="view"></canvas>
+        <div id="fx" class="fx"></div>
+        <div id="banner" class="banner" hidden></div>
+        <div id="toast" class="toast" hidden></div>
+        <aside id="log" class="log"></aside>
+        <div id="dialogue" class="dialogue" hidden>
+          <img id="dlg-portrait" class="dlg-portrait" alt="" />
+          <div class="dlg-body">
+            <div class="dlg-name"><span id="dlg-callsign" class="dlg-callsign"></span> <span id="dlg-name"></span></div>
+            <div id="dlg-text" class="dlg-text"></div>
+          </div>
+        </div>
+        <div id="hud" class="hud">
+          <span class="title">LINEAR SPACE</span>
+          <span id="mode-label" class="mode">DEPLOY</span>
+          <span id="tu-readout" class="tu-readout"></span>
+          <span class="hud-buttons">
+            <button id="btn-camera" title="Cycle camera: top-down, tilted, isometric">View: Iso</button>
+            <button id="btn-portraits" class="active" title="Show units as pilot portraits or geometric shapes">Portraits</button>
+          </span>
+        </div>
+      </main>
 
-    <main id="stage">
-      <canvas id="view"></canvas>
-      <div id="fx" class="fx"></div>
-      <div id="banner" class="banner" hidden></div>
-      <div id="toast" class="toast" hidden></div>
-      <aside id="inspect" class="inspect" hidden></aside>
-      <aside id="log" class="log"></aside>
-      <div id="dialogue" class="dialogue" hidden>
-        <img id="dlg-portrait" class="dlg-portrait" alt="" />
-        <div class="dlg-body">
-          <div class="dlg-name"><span id="dlg-callsign" class="dlg-callsign"></span> <span id="dlg-name"></span></div>
-          <div id="dlg-text" class="dlg-text"></div>
+      <section id="panel">
+        <!-- Tray: squad row on top; below it, items (deploy) or hostile cards (battle). Details follow. -->
+        <div class="tray-area">
+          <canvas id="cards"></canvas>
+          <div class="tray-divider"></div>
+          <div class="items-panel deploy-only">
+            <div id="armory" class="roster items"></div>
+          </div>
         </div>
-      </div>
-    </main>
 
-    <footer>
-      <section class="deploy-only">
-        <div class="tray-tabs">
-          <button id="tab-units" class="active">Units</button>
-          <button id="tab-armory">Armory</button>
-        </div>
-        <div id="roster" class="roster"></div>
-        <div id="armory" class="roster" hidden></div>
-        <div class="row">
-          <span id="deploy-msg" class="msg"></span>
-        </div>
-        <div class="row">
-          <label class="seed">Seed <input id="seed" type="number" value="481927" inputmode="numeric" /></label>
-          <button id="btn-new-seed">New seed</button>
-          <button id="btn-reset-formation">Reset</button>
-          <button id="btn-commit" class="primary">Commit</button>
-        </div>
+        <aside class="info">
+          <div id="inspect" class="inspect" hidden></div>
+          <div class="info-empty">Tap a unit to see its details.</div>
+        </aside>
+
+        <section class="controls deploy-only">
+          <div id="deploy-msg" class="msg"></div>
+          <div class="actions">
+            <button id="btn-commit" class="primary">Commit</button>
+            <label class="seed">Seed <input id="seed" type="number" value="481927" inputmode="numeric" /></label>
+            <span class="row">
+              <button id="btn-new-seed">New seed</button>
+              <button id="btn-reset-formation">Reset</button>
+            </span>
+          </div>
+        </section>
+
+        <section class="controls battle-only">
+          <input id="scrub" type="range" min="0" max="1" step="0.01" value="0" />
+          <div class="row">
+            <button id="btn-restart" title="Restart">Restart</button>
+            <button id="btn-back" title="Back one TU (Left)">-1 TU</button>
+            <button id="btn-play" class="primary" title="Play / pause (Space)">Pause</button>
+            <button id="btn-step" title="Step one TU (Right)">+1 TU</button>
+            <span id="speeds" class="speeds"></span>
+          </div>
+          <div class="row">
+            <button id="btn-redeploy">Redeploy</button>
+            <button id="btn-log">Log</button>
+            <button id="btn-chatter" class="active">Chatter</button>
+            <button id="btn-targets" class="active">Targets</button>
+            <button id="btn-bloom" class="active">Bloom</button>
+            <button id="btn-export">Export log</button>
+          </div>
+        </section>
       </section>
-
-      <section class="battle-only">
-        <input id="scrub" type="range" min="0" max="1" step="0.01" value="0" />
-        <div class="row">
-          <button id="btn-restart" title="Restart">Restart</button>
-          <button id="btn-back" title="Back one TU (Left)">-1 TU</button>
-          <button id="btn-play" class="primary" title="Play / pause (Space)">Pause</button>
-          <button id="btn-step" title="Step one TU (Right)">+1 TU</button>
-          <span id="speeds" class="speeds"></span>
-        </div>
-        <div class="row">
-          <button id="btn-redeploy">Redeploy</button>
-          <button id="btn-log">Log</button>
-          <button id="btn-chatter" class="active">Chatter</button>
-          <button id="btn-targets" class="active">Targets</button>
-          <button id="btn-bloom" class="active">Bloom</button>
-          <button id="btn-export">Export log</button>
-        </div>
-      </section>
-    </footer>
+    </div>
 
     <img id="drag-ghost" class="drag-ghost" alt="" hidden />
     <div id="drag-item" class="drag-item item-badge" hidden></div>

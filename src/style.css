@@ -7,8 +7,20 @@
   --accent: #3cf0ff;
   --danger: #ff3d6e;
   --good: #3cffb0;
+  /* Portrait frame: phone-portrait shape (9:19.5, width / height) letterboxed on desktop. */
+  --ar: 0.4615;
+  --app-w: min(100vw, calc(100dvh * var(--ar)));
+  --app-h: min(100dvh, calc(100vw / var(--ar)));
   font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   color-scheme: dark;
+}
+
+/* Touch devices use the whole screen. */
+@media (pointer: coarse) {
+  :root {
+    --app-w: 100vw;
+    --app-h: 100dvh;
+  }
 }
 
 * {
@@ -19,7 +31,7 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  background: #000;
   color: var(--text);
   overflow: hidden;
   touch-action: manipulation;
@@ -27,43 +39,26 @@ body {
 
 body {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   height: 100dvh;
+}
+
+/* Everything inside sizes in em off this font size (set from the frame width), so the layout scales
+   with the frame. */
+#app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--app-w);
+  height: var(--app-h);
+  font-size: calc(var(--app-w) * 0.03);
+  background: var(--bg);
+  overflow: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
-}
-
-.title {
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: var(--accent);
-}
-
-.title small {
-  color: var(--dim);
-  font-weight: 400;
-  letter-spacing: 0.04em;
-}
-
-.mode {
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--dim);
-}
-
-.tu-readout {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
+/* ---- Stage (grid) ---- */
 
 #stage {
   position: relative;
@@ -87,17 +82,56 @@ header {
   overflow: hidden;
 }
 
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  padding: 0.35em 0.8em;
+  font-size: 0.85em;
+  background: linear-gradient(rgba(3, 5, 10, 0.85), rgba(3, 5, 10, 0));
+  pointer-events: none;
+}
+.hud button {
+  pointer-events: auto;
+}
+.title {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+.mode {
+  padding: 0.1em 0.6em;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--dim);
+}
+.tu-readout {
+  font-variant-numeric: tabular-nums;
+}
+.hud-buttons {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.4em;
+}
+.hud-buttons button {
+  min-height: 2em;
+  padding: 0.2em 0.7em;
+}
+
 .num {
   position: absolute;
   left: 0;
   top: 0;
   font-weight: 800;
-  font-size: 15px;
+  font-size: 1.25em;
   text-shadow: 0 0 6px currentColor;
   will-change: transform, opacity;
   white-space: nowrap;
 }
-
 .num.dmg {
   color: #ffffff;
 }
@@ -109,15 +143,25 @@ header {
 }
 .num.timeout {
   color: #ff9a3c;
-  font-size: 12px;
+  font-size: 1em;
+}
+.num.proc {
+  color: #ffd84a;
+  font-size: 0.85em;
+  letter-spacing: 0.08em;
+}
+.num.eject {
+  color: #ffb040;
+  font-size: 1.1em;
+  letter-spacing: 0.12em;
 }
 
 .banner {
   position: absolute;
-  top: 38%;
+  top: 40%;
   left: 50%;
   transform: translate(-50%, -50%);
-  font-size: clamp(32px, 9vw, 64px);
+  font-size: 4.5em;
   font-weight: 900;
   letter-spacing: 0.2em;
   pointer-events: none;
@@ -135,65 +179,27 @@ header {
 
 .toast {
   position: absolute;
-  top: 12px;
+  top: 2.6em;
   left: 50%;
   transform: translateX(-50%);
   background: var(--panel);
   border: 1px solid var(--danger);
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 0.4em 1em;
   border-radius: 3px;
   pointer-events: none;
-}
-
-.inspect {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  width: min(240px, 60vw);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  padding: 8px 10px;
-  font-size: 11px;
-  border-radius: 3px;
-  pointer-events: none;
-}
-.inspect table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 4px 0;
-}
-.inspect td {
-  padding: 1px 2px;
-}
-.inspect td:nth-child(odd) {
-  color: var(--dim);
-}
-.ins-head b {
-  color: var(--accent);
-  font-size: 13px;
-}
-.ins-role,
-.ins-line {
-  color: var(--dim);
-}
-.side-player {
-  color: var(--good);
-}
-.side-enemy {
-  color: var(--danger);
 }
 
 .log {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  bottom: 8px;
-  width: min(340px, 80vw);
+  right: 0.6em;
+  top: 2.6em;
+  bottom: 0.6em;
+  width: 26em;
+  max-width: 45%;
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 6px 8px;
-  font-size: 10.5px;
+  padding: 0.4em 0.6em;
+  font-size: 0.85em;
   line-height: 1.35;
   overflow-y: auto;
   display: none;
@@ -204,31 +210,110 @@ header {
 }
 .log .tu {
   color: var(--accent);
-  margin-top: 4px;
+  margin-top: 0.3em;
 }
 .log .crit {
   color: var(--text);
-  padding-left: 8px;
+  padding-left: 0.6em;
 }
 .log .cos {
   color: var(--dim);
-  padding-left: 8px;
+  padding-left: 0.6em;
 }
 
-footer {
+/* Combat chatter: player lines on the left, enemy lines mirrored on the right. */
+.dialogue {
+  position: absolute;
+  left: 0.6em;
+  bottom: 0.6em;
+  max-width: min(32em, calc(100% - 1.2em));
+  display: flex;
+  align-items: center;
+  gap: 0.7em;
+  padding: 0.5em 0.9em 0.5em 0.5em;
+  background: var(--panel);
+  border: 1px solid var(--unit-color);
+  border-radius: 4px;
+  box-shadow: 0 0 14px -4px var(--unit-color);
+  pointer-events: none;
+}
+.dialogue[hidden] {
+  display: none;
+}
+.dialogue[data-side='enemy'] {
+  left: auto;
+  right: 0.6em;
+  flex-direction: row-reverse;
+  text-align: right;
+}
+.dlg-portrait {
+  width: 4.5em;
+  height: 4.5em;
+  flex: 0 0 auto;
+  border: 2px solid var(--unit-color);
+  border-radius: 4px;
+}
+.dlg-name {
+  font-size: 0.85em;
+  color: var(--dim);
+}
+.dlg-callsign {
+  color: var(--unit-color);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+.dlg-text {
+  line-height: 1.3;
+  min-height: 2.6em;
+  margin-top: 0.15em;
+}
+
+/* ---- Bottom panel: selected unit info + controls ---- */
+
+/* The board is width-limited in portrait, so the stage keeps just enough height for it and the panel
+   takes the rest; panel content is laid out to fit without scrolling. */
+#panel {
+  flex: 0 0 52%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  padding: 0.5em 0.8em;
   border-top: 1px solid var(--line);
-  padding: 8px 16px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  min-height: 0;
 }
 
-footer section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* Fixed height so selecting a unit or item never shifts the layout below. */
+.info {
+  flex: 0 0 auto;
+  height: 7.4em;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding-top: 0.4em;
+  padding-bottom: 0.5em;
+}
+.info-empty {
+  color: var(--dim);
+  font-size: 0.9em;
+  padding-top: 0.4em;
+}
+.info:has(> .inspect:not([hidden])) .info-empty {
+  display: none;
 }
 
+/* Same fixed height in both modes, so the tray above keeps exactly the same size. */
+.controls {
+  flex: 0 0 auto;
+  height: 11.5em;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+.controls.battle-only {
+  justify-content: center;
+}
 body[data-mode='deploy'] .battle-only,
 body[data-mode='battle'] .deploy-only {
   display: none;
@@ -238,18 +323,18 @@ body[data-mode='battle'] .deploy-only {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 0.4em;
 }
 
 button {
   font: inherit;
-  font-size: 12px;
+  font-size: 0.9em;
   color: var(--text);
   background: #0a1622;
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 7px 10px;
-  min-height: 34px;
+  padding: 0.3em 0.7em;
+  min-height: 2.4em;
   cursor: pointer;
 }
 button:hover {
@@ -272,10 +357,10 @@ button:disabled {
 
 .speeds {
   display: inline-flex;
-  gap: 2px;
+  gap: 0.15em;
 }
 .speeds button {
-  padding: 7px 7px;
+  padding: 0.3em 0.45em;
 }
 
 #scrub {
@@ -284,41 +369,125 @@ button:disabled {
 }
 
 .msg {
-  font-size: 11px;
+  font-size: 0.8em;
   color: var(--dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tray: unit cards on the left and items on the right while deploying; in battle the cards span both
+   columns (squad left, hostiles right). */
+.tray-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+#cards {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+/* Splits the squad row from the items/hostiles area below (keep in step with CARD_TRAY.squadShare):
+   a squad-cyan line over a hostile-red line in battle, or over an accent line while deploying. */
+.tray-divider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 33.333%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-top: 2px solid #2ad4ff;
+  border-bottom: 2px solid #ff3366;
+  box-shadow: 0 -1px 6px -1px #2ad4ff, 0 1px 6px -1px #ff3366;
+  pointer-events: none;
+}
+body[data-mode='deploy'] .tray-divider {
+  border-bottom-color: var(--accent);
+  box-shadow: 0 -1px 6px -1px #2ad4ff, 0 1px 6px -1px var(--accent);
+}
+/* Starts below the divider's empty band (CARD_TRAY.dividerGap). */
+.items-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(33.333% + 4%);
+  height: calc(66.667% - 4%);
+  overflow: hidden;
+}
+/* Item cards show badge and name only; tap one for its description. */
+/* Items are a grid of square badges. */
+.roster.items {
+  grid-template-columns: repeat(auto-fill, 3.4em);
+  justify-content: start;
+  gap: 0.4em;
+}
+.item-tile {
+  width: 3.4em;
+  height: 3.4em;
+  pointer-events: auto;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.item-tile.selected {
+  background: #12304a;
+  box-shadow: 0 0 12px 1px var(--unit-color);
+}
+
+
+.actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+}
+.actions .primary {
+  min-height: 2.8em;
+  font-size: 1em;
 }
 
 .seed {
-  font-size: 12px;
+  font-size: 0.85em;
   color: var(--dim);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.3em;
 }
 .seed input {
-  width: 92px;
+  width: 6.5em;
   font: inherit;
   background: #0a1622;
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 6px;
+  padding: 0.3em;
 }
 
+/* Trays wrap into a grid so every card is visible without scrolling. */
 .roster {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9em, 1fr));
+  gap: 0.35em;
+}
+.controls.battle-only {
+  flex: 0 0 auto;
+}
+.roster[hidden] {
+  display: none;
 }
 
 .card {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 136px;
-  padding: 5px 8px 5px 5px;
+  gap: 0.4em;
+  min-width: 0;
+  padding: 0.3em 0.6em 0.3em 0.3em;
   background: #0a1622;
   border: 1px solid var(--line);
   border-left: 3px solid var(--unit-color);
@@ -326,19 +495,7 @@ button:disabled {
   text-align: left;
   cursor: grab;
   user-select: none;
-  touch-action: pan-x;
-}
-.card-portrait {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 2px solid var(--unit-color);
-  pointer-events: none;
-}
-.card-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+  touch-action: none;
 }
 .card.placed {
   background: #0c2030;
@@ -347,6 +504,20 @@ button:disabled {
   border-color: var(--unit-color);
   box-shadow: 0 0 10px -2px var(--unit-color);
 }
+.card-portrait {
+  width: 3.2em;
+  height: 3.2em;
+  border-radius: 50%;
+  border: 2px solid var(--unit-color);
+  pointer-events: none;
+}
+.card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 0.85em;
+}
 .card-name {
   font-weight: 700;
   color: var(--unit-color);
@@ -354,156 +525,80 @@ button:disabled {
 .card-pilot,
 .card-role,
 .card-state {
-  font-size: 10px;
+  font-size: 0.85em;
   color: var(--dim);
-}
-
-.ins-top {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.ins-portrait {
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  border: 2px solid var(--line);
-}
-.ins-pilot {
-  color: var(--text);
-}
-
-.drag-ghost {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  border: 3px solid var(--unit-color);
-  box-shadow: 0 0 16px var(--unit-color);
-  pointer-events: none;
-  z-index: 10;
-  opacity: 0.9;
-}
-
-/* Combat chatter: player lines on the left, enemy lines mirrored on the right. */
-.dialogue {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  max-width: min(440px, calc(100% - 16px));
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px 8px 8px;
-  background: var(--panel);
-  border: 1px solid var(--unit-color);
-  border-radius: 4px;
-  box-shadow: 0 0 14px -4px var(--unit-color);
-  pointer-events: none;
-}
-.dialogue[data-side='enemy'] {
-  left: auto;
-  right: 8px;
-  flex-direction: row-reverse;
-  text-align: right;
-}
-.dlg-portrait {
-  width: 72px;
-  height: 72px;
-  flex: 0 0 auto;
-  border: 2px solid var(--unit-color);
-  border-radius: 4px;
-}
-.dlg-name {
-  font-size: 11px;
-  color: var(--dim);
-}
-.dlg-callsign {
-  color: var(--unit-color);
-  font-weight: 800;
-  letter-spacing: 0.1em;
-}
-.dlg-text {
-  font-size: 13px;
-  line-height: 1.35;
-  min-height: 2.7em;
-  margin-top: 2px;
-}
-.dialogue[hidden] {
-  display: none;
-}
-
-/* Equipment */
-.roster[hidden] {
-  display: none;
-}
-.tray-tabs {
-  display: flex;
-  gap: 4px;
-}
-.tray-tabs button {
-  min-height: 28px;
-  padding: 4px 12px;
-}
-.item-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  height: 40px;
-  padding: 0 4px;
-  border: 2px solid var(--unit-color);
-  border-radius: 6px;
-  background: #0a1622;
-  color: var(--unit-color);
-  font-weight: 800;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  box-shadow: 0 0 8px -3px var(--unit-color);
-  pointer-events: none;
-}
-.item-badge.big {
-  min-width: 52px;
-  height: 52px;
-  font-size: 14px;
-}
-.card.item {
-  min-width: 170px;
 }
 .card-slots {
   display: inline-flex;
   gap: 2px;
-  margin-left: 4px;
+  margin-left: 0.3em;
   vertical-align: middle;
 }
 .card-slots i {
-  width: 8px;
-  height: 8px;
+  width: 0.6em;
+  height: 0.6em;
   border: 1px solid var(--line);
   border-radius: 2px;
 }
-.drag-item {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 10;
+
+/* Selected unit info flows into two columns to keep the info area short. */
+.inspect {
+  columns: 2;
+  column-gap: 1em;
+  font-size: 0.85em;
 }
-.drag-item[hidden] {
-  display: none;
+.inspect > * {
+  break-inside: avoid;
+}
+.inspect table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.2em 0;
+}
+.inspect td {
+  padding: 1px 2px;
+}
+.inspect td:nth-child(odd) {
+  color: var(--dim);
+}
+.ins-top {
+  display: flex;
+  gap: 0.6em;
+  align-items: center;
+}
+.ins-portrait {
+  width: 3.4em;
+  height: 3.4em;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+}
+.ins-head b {
+  color: var(--accent);
+  font-size: 1.1em;
+}
+.ins-pilot {
+  color: var(--text);
+}
+.ins-role,
+.ins-line {
+  color: var(--dim);
+}
+.side-player {
+  color: var(--good);
+}
+.side-enemy {
+  color: var(--danger);
 }
 .inspect .slots {
   display: flex;
-  gap: 4px;
-  margin: 4px 0;
-  pointer-events: auto;
+  gap: 0.3em;
+  margin: 0.3em 0;
 }
 .inspect .slot {
-  min-height: 26px;
-  min-width: 44px;
-  padding: 2px 6px;
-  font-size: 11px;
+  min-height: 2em;
+  min-width: 3.4em;
+  padding: 0.1em 0.4em;
+  font-size: 0.95em;
   font-weight: 800;
   color: var(--unit-color);
   border: 1px solid var(--unit-color);
@@ -519,14 +614,65 @@ button:disabled {
 .inspect .mod {
   color: var(--good);
 }
-.num.proc {
-  color: #ffd84a;
-  font-size: 10px;
-  letter-spacing: 0.08em;
+
+/* ---- Equipment badges and drag ghosts ---- */
+
+.item-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3em;
+  height: 3em;
+  padding: 0 0.3em;
+  border: 2px solid var(--unit-color);
+  border-radius: 6px;
+  background: #0a1622;
+  color: var(--unit-color);
+  font-weight: 800;
+  font-size: 0.9em;
+  letter-spacing: 0.06em;
+  box-shadow: 0 0 8px -3px var(--unit-color);
+  pointer-events: none;
+}
+.item-badge.big {
+  min-width: 3.4em;
+  height: 3.4em;
 }
 
-.num.eject {
-  color: #ffb040;
-  font-size: 13px;
-  letter-spacing: 0.12em;
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 3px solid var(--unit-color);
+  box-shadow: 0 0 16px var(--unit-color);
+  pointer-events: none;
+  z-index: 10;
+  opacity: 0.9;
+}
+.drag-item {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10;
+  font-size: 14px;
+}
+.drag-item[hidden] {
+  display: none;
+}
+
+/* No visible scroll bars (the log still scrolls by swipe or wheel). */
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+/* Card art keeps its size in narrow grid cells; the text beside it wraps instead. */
+.card > .card-portrait,
+.card > .item-badge {
+  flex: 0 0 auto;
 }
