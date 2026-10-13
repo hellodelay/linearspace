@@ -11,6 +11,12 @@ npm run battle -- --seed 42     # print a battle log headless
 npm run serve                   # http://localhost:8080/
 ```
 
+## Deployment
+
+Pushes to `main` deploy to GitHub Pages via [.github/workflows/pages.yml](.github/workflows/pages.yml)
+(tests must pass). One-time setup: repo Settings > Pages > Source = "GitHub Actions".
+The site is served at https://hellodelay.github.io/linearspace/.
+
 ## Architecture
 
 ```
